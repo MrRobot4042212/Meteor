@@ -1,31 +1,66 @@
 import type { Config } from 'tailwindcss';
 
+/** Helper: a theme color backed by a CSS variable, with Tailwind alpha support. */
+const v = (name: string) => `rgb(var(--${name}) / <alpha-value>)`;
+
 const config: Config = {
+  darkMode: 'class',
   content: ['./src/**/*.{ts,tsx}'],
   theme: {
     extend: {
       colors: {
-        void: '#0A0C10',
-        surface: '#12151C',
-        elevated: '#1A1F29',
-        line: '#232A36',
-        ink: '#E6E9EF',
-        muted: '#8A93A3',
+        // Semantic tokens (shadcn-style) for new code.
+        background: v('background'),
+        foreground: v('foreground'),
+        sidebar: v('sidebar'),
+        primary: {
+          DEFAULT: v('primary'),
+          foreground: v('primary-foreground'),
+        },
+        info: v('info'),
+        destructive: {
+          DEFAULT: v('destructive'),
+          foreground: v('destructive-foreground'),
+        },
+        border: v('border'),
+        ring: v('ring'),
+        popover: v('popover'),
+
+        // Legacy aliases mapped onto the palette so existing component classes
+        // keep working (void/surface/elevated/line/ink/muted/accent). The app's
+        // primary action colour is the red `--primary`.
+        void: v('background'),
+        surface: v('surface'),
+        elevated: v('elevated'),
+        line: v('border'),
+        ink: v('foreground'),
+        muted: v('muted-foreground'),
         accent: {
-          DEFAULT: '#FF6A3D',
-          soft: '#FF8A63',
+          DEFAULT: v('primary'),
+          soft: v('primary-soft'),
         },
       },
       fontFamily: {
-        display: ['var(--font-display)', 'system-ui', 'sans-serif'],
-        sans: ['var(--font-body)', 'system-ui', 'sans-serif'],
+        display: ['var(--font-oxanium)', 'system-ui', 'sans-serif'],
+        sans: ['var(--font-oxanium)', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
       },
       boxShadow: {
-        card: '0 10px 30px -12px rgba(0,0,0,0.7)',
-        glow: '0 0 0 1px rgba(255,106,61,0.35), 0 14px 40px -12px rgba(255,106,61,0.35)',
+        card: '0px 2px 5px 0px rgb(0 0 0 / 0.55), 0px 6px 16px -6px rgb(0 0 0 / 0.6)',
+        glow: '0 0 0 1px rgb(var(--ring) / 0.6), 0 14px 40px -18px rgb(var(--ring) / 0.35)',
       },
+      // Modernist look: no rounded corners anywhere (sharp edges, --radius: 0).
       borderRadius: {
-        xl2: '14px',
+        none: '0',
+        sm: '0',
+        DEFAULT: '0',
+        md: '0',
+        lg: '0',
+        xl: '0',
+        '2xl': '0',
+        '3xl': '0',
+        full: '0',
+        xl2: '0',
       },
     },
   },

@@ -2,8 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Theme tokens as RGB channel triplets so Tailwind can apply alpha modifiers via
+   `rgb(var(--x) / <alpha-value>)`. :root is light; `.dark` flips to dark, which is
+   what the app activates by default (see layout.tsx). Green (`secondary`) from the
+   source palette is intentionally left out per request. */
 :root {
+  color-scheme: light;
+
+  --background: 204 204 204;
+  --foreground: 31 31 31;
+  --surface: 176 176 176;
+  --elevated: 188 188 188;
+  --sidebar: 176 176 176;
+  --border: 80 80 80;
+  --muted-foreground: 74 74 74;
+  --primary: 183 28 28;
+  --primary-foreground: 255 255 255;
+  --primary-soft: 211 47 47;
+  --ring: 183 28 28;
+  --popover: 176 176 176;
+  --info: 70 130 180;
+  --destructive: 255 111 0;
+  --destructive-foreground: 0 0 0;
+}
+
+.dark {
   color-scheme: dark;
+
+  --background: 26 26 26;
+  --foreground: 224 224 224;
+  --surface: 42 42 42;
+  --elevated: 51 51 51;
+  --sidebar: 20 20 20;
+  --border: 74 74 74;
+  --muted-foreground: 160 160 160;
+  --primary: 229 57 53;
+  --primary-foreground: 255 255 255;
+  --primary-soft: 239 83 80;
+  --ring: 229 57 53;
+  --popover: 42 42 42;
+  --info: 100 181 246;
+  --destructive: 255 160 0;
+  --destructive-foreground: 0 0 0;
 }
 
 html,
@@ -12,8 +52,8 @@ body {
 }
 
 body {
-  background-color: #0a0c10;
-  color: #e6e9ef;
+  background-color: rgb(var(--background));
+  color: rgb(var(--foreground));
   overflow: hidden; /* the app shell manages its own scrolling */
 }
 
@@ -23,17 +63,52 @@ body {
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #232a36;
+  background: rgb(var(--border));
   border-radius: 8px;
-  border: 2px solid #0a0c10;
+  border: 2px solid rgb(var(--background));
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #2d3543;
+  background: rgb(var(--muted-foreground));
 }
 
 /* Don't let users select UI text like a webpage */
 .no-select {
   user-select: none;
+}
+
+/* Indeterminate progress sweep for the first-run splash. */
+@keyframes meteor-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+.animate-meteor-slide {
+  animation: meteor-slide 1.2s ease-in-out infinite;
+}
+
+/* Falling meteorites for the splash spinner. They streak diagonally (matching
+   the icon's tail) from top-left to bottom-right, fading in and out. */
+@keyframes meteor-fall {
+  0% {
+    transform: translate(-30px, -55px) scale(0.85);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(45px, 75px) scale(1);
+    opacity: 0;
+  }
+}
+.animate-meteor-fall {
+  animation: meteor-fall 2.2s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

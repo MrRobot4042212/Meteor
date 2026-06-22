@@ -1,21 +1,22 @@
 import type { Metadata } from 'next';
-import { Inter, Space_Grotesk } from 'next/font/google';
+import { Oxanium, Source_Code_Pro } from 'next/font/google';
 import './globals.css';
 
-const body = Inter({
+// Oxanium is the UI font (body + display); Source Code Pro for monospace bits.
+const oxanium = Oxanium({
   subsets: ['latin'],
-  variable: '--font-body',
+  variable: '--font-oxanium',
   display: 'swap',
 });
 
-const display = Space_Grotesk({
+const mono = Source_Code_Pro({
   subsets: ['latin'],
-  variable: '--font-display',
+  variable: '--font-mono',
   display: 'swap',
 });
 
 export const metadata: Metadata = {
-  title: 'Nexo',
+  title: 'Meteor',
   description: 'Tu biblioteca unificada de juegos y apps',
 };
 
@@ -25,7 +26,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="es" className={`${body.variable} ${display.variable}`}>
+    <html lang="es" className={`dark ${oxanium.variable} ${mono.variable}`}>
       <body className="font-sans no-select">{children}</body>
     </html>
   );

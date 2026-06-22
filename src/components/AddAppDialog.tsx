@@ -119,7 +119,7 @@ export function AddAppDialog({
           <button
             onClick={submit}
             disabled={busy}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-void hover:bg-accent-soft disabled:opacity-50"
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-soft disabled:opacity-50"
           >
             {busy ? 'Añadiendo…' : 'Añadir'}
           </button>

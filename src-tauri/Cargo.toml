@@ -1,25 +1,32 @@
 [package]
-name = "nexo"
+name = "meteor"
 version = "0.1.0"
-description = "Nexo - biblioteca unificada de juegos y apps"
+description = "Meteor - biblioteca unificada de juegos y apps"
 authors = ["Alfonso"]
 edition = "2021"
 rust-version = "1.77"
 
 # The library is what main.rs (and mobile entry points) call into.
 [lib]
-name = "nexo_lib"
+name = "meteor_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 steamlocate = "2.1"
+ureq = { version = "2", features = ["json", "tls"] }
+urlencoding = "2"
+sysinfo = "0.30"
+
+# Registry-backed scanners (GOG, EA, Ubisoft) are Windows-only.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 
 [profile.release]
 panic = "abort"

@@ -4,48 +4,69 @@ use std::process::Command;
 
 /// Launch a library entry.
 ///
-/// - Steam games are launched through the `steam://rungameid/<id>` protocol so
-///   Steam handles updates/DRM/overlay correctly.
-/// - Manual apps are spawned directly, with the working directory set to the
-///   executable's folder (many games expect their own folder as CWD).
+/// - Steam games go through `steam://rungameid/<id>` so Steam handles
+///   updates/DRM/overlay.
+/// - Other store games with a `launch_uri` (Epic, Ubisoft) are opened through
+///   their client protocol for the same reason.
+/// - Everything else (manual apps, GOG, Xbox, EA) is spawned directly from its
+///   executable, with the working directory set to the executable's folder.
 pub fn launch(game: &Game) -> Result<(), String> {
     match game.source {
         GameSource::Steam => {
             let app_id = game
                 .app_id
                 .ok_or_else(|| "Juego de Steam sin AppID".to_string())?;
-            let url = format!("steam://rungameid/{app_id}");
-
-            #[cfg(target_os = "windows")]
-            {
-                // `start` needs an (empty) title argument before the URL.
-                Command::new("cmd")
-                    .args(["/C", "start", "", &url])
-                    .spawn()
-                    .map_err(|e| format!("No se pudo abrir Steam: {e}"))?;
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                Command::new("xdg-open")
-                    .arg(&url)
-                    .spawn()
-                    .map_err(|e| format!("No se pudo abrir Steam: {e}"))?;
-            }
-            Ok(())
+            open_uri(&format!("steam://rungameid/{app_id}"))
         }
-        GameSource::Manual => {
-            let exe = game
-                .executable
-                .as_ref()
-                .ok_or_else(|| "La app no tiene ejecutable".to_string())?;
-            let path = Path::new(exe);
-            let mut cmd = Command::new(path);
-            if let Some(parent) = path.parent() {
-                cmd.current_dir(parent);
+        _ => {
+            if let Some(uri) = game.launch_uri.as_deref().filter(|u| !u.trim().is_empty()) {
+                open_uri(uri)
+            } else if let Some(exe) = game.executable.as_deref().filter(|e| !e.trim().is_empty()) {
+                spawn_exe(exe, &game.name)
+            } else {
+                Err(format!("No hay forma de lanzar «{}»", game.name))
             }
-            cmd.spawn()
-                .map_err(|e| format!("No se pudo iniciar «{}»: {e}", game.name))?;
-            Ok(())
         }
     }
+}
+
+/// Open a protocol URI through the OS handler.
+fn open_uri(uri: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Xbox/Store apps launch by AUMID through the shell app folder.
+        if uri.starts_with("shell:") {
+            Command::new("explorer.exe")
+                .arg(uri)
+                .spawn()
+                .map_err(|e| format!("No se pudo abrir «{uri}»: {e}"))?;
+            return Ok(());
+        }
+        // `start` needs an (empty) title argument before the URL.
+        Command::new("cmd")
+            .args(["/C", "start", "", uri])
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir «{uri}»: {e}"))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("xdg-open")
+            .arg(uri)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir «{uri}»: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Spawn an executable directly, running it from its own folder (many games
+/// expect their install directory as the current working directory).
+fn spawn_exe(exe: &str, name: &str) -> Result<(), String> {
+    let path = Path::new(exe);
+    let mut cmd = Command::new(path);
+    if let Some(parent) = path.parent() {
+        cmd.current_dir(parent);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("No se pudo iniciar «{name}»: {e}"))?;
+    Ok(())
 }

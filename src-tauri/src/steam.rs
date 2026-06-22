@@ -53,11 +53,12 @@ pub fn scan() -> Result<Vec<Game>, String> {
                 app_id: Some(app.app_id),
                 executable: None,
                 install_dir: Some(install_dir),
-                // Steam serves library art on its CDN without an API key.
-                cover_url: Some(format!(
-                    "https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg",
-                    app.app_id
-                )),
+                // Covers come from IGDB (resolved lazily by the frontend), same
+                // as every other source.
+                cover_url: None,
+                launch_uri: None,
+                favorite: false,
+                categories: Vec::new(),
             });
         }
     }

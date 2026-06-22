@@ -1,18 +1,39 @@
 use serde::{Deserialize, Serialize};
 
-/// Where a library entry comes from. New sources (Epic, GOG, Xbox, registry
-/// apps...) should be added here and handled in `steam.rs`-style modules.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Where a library entry comes from. Each variant is produced by its own scanner
+/// module (`steam.rs`, `epic.rs`, `gog.rs`, …) and merged in `get_library`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum GameSource {
     Steam,
+    Epic,
+    Gog,
+    Ea,
+    Ubisoft,
+    Xbox,
+    Battlenet,
+    Riot,
+    Rockstar,
+    Amazon,
+    /// Generic catch-all: anything found via the Windows uninstall registry that
+    /// isn't claimed by a more specific scanner.
+    Windows,
     Manual,
+}
+
+/// A user-created category, optionally with a chosen icon key (resolved to an
+/// SVG on the frontend from a bundled icon set). Persisted in `storage.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Category {
+    pub name: String,
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 /// A single launchable entry in the unified library.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
-    /// Stable unique id, e.g. "steam:440" or "manual:1718900000000".
+    /// Stable unique id, e.g. "steam:440", "epic:Fortnite", "manual:1718900000000".
     pub id: String,
     pub name: String,
     pub source: GameSource,
@@ -21,7 +42,8 @@ pub struct Game {
     #[serde(default)]
     pub app_id: Option<u32>,
 
-    /// Absolute path to the executable (only for `GameSource::Manual`).
+    /// Absolute path to the executable, when the game is launched directly
+    /// (manual apps, GOG, Xbox, some EA games).
     #[serde(default)]
     pub executable: Option<String>,
 
@@ -29,7 +51,23 @@ pub struct Game {
     #[serde(default)]
     pub install_dir: Option<String>,
 
-    /// Remote cover image URL. For Steam this is the vertical capsule.
+    /// Remote cover image URL. For Steam this is the vertical capsule; for other
+    /// stores it is resolved lazily via `art.rs` (SteamGridDB / Steam CDN).
     #[serde(default)]
     pub cover_url: Option<String>,
+
+    /// Protocol URI used to launch store-managed games (Epic / Ubisoft), so the
+    /// store handles DRM/updates/overlay. Takes precedence over `executable`.
+    #[serde(default)]
+    pub launch_uri: Option<String>,
+
+    /// User overlay: whether the user marked this entry as a favorite. Not set by
+    /// scanners; applied in `get_library` from `favorites.json` (`storage.rs`).
+    #[serde(default)]
+    pub favorite: bool,
+
+    /// User overlay: manual categories the user assigned to this entry. Not set by
+    /// scanners; applied in `get_library` from `categories.json` (`storage.rs`).
+    #[serde(default)]
+    pub categories: Vec<String>,
 }
