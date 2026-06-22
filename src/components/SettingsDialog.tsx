@@ -1,7 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { clearCoverCache, hiddenCount, restoreHidden } from '@/lib/tauri';
+import {
+  clearCoverCache,
+  hiddenCount,
+  restoreHidden,
+  getDiscordClientId,
+  setDiscordClientId,
+} from '@/lib/tauri';
 import { CloseIcon } from './icons';
 
 export function SettingsDialog({
@@ -15,12 +21,31 @@ export function SettingsDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hidden, setHidden] = useState<number | null>(null);
+  const [discordId, setDiscordId] = useState('');
+  const [discordSaved, setDiscordSaved] = useState(false);
 
   useEffect(() => {
     hiddenCount()
       .then(setHidden)
       .catch(() => setHidden(null));
+    getDiscordClientId()
+      .then(setDiscordId)
+      .catch(() => {});
   }, []);
+
+  async function saveDiscord() {
+    setBusy(true);
+    setError(null);
+    try {
+      await setDiscordClientId(discordId.trim());
+      setDiscordSaved(true);
+      window.setTimeout(() => setDiscordSaved(false), 2000);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function clear() {
     setBusy(true);
@@ -97,6 +122,33 @@ export function SettingsDialog({
           >
             Restaurar ocultos
           </button>
+        </div>
+
+        <div className="mt-5 border-t border-line pt-5">
+          <p className="mb-2 text-xs font-medium text-ink">Discord Rich Presence</p>
+          <p className="mb-3 text-xs leading-relaxed text-muted">
+            Muestra a qué juegas en tu estado de Discord. Ya viene activado para todos;
+            este campo es <span className="text-ink">opcional</span>: pon tu propio{' '}
+            <span className="text-ink">Application ID</span> de
+            discord.com/developers/applications solo si quieres usar tu app en vez de la de
+            Meteor. Vacío = se usa la de Meteor.
+          </p>
+          <div className="flex gap-2">
+            <input
+              value={discordId}
+              onChange={(e) => setDiscordId(e.target.value)}
+              placeholder="Application ID (solo números)"
+              inputMode="numeric"
+              className="w-full rounded-lg border border-line bg-elevated px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted/60 focus:border-accent/60"
+            />
+            <button
+              onClick={saveDiscord}
+              disabled={busy}
+              className="shrink-0 rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-soft disabled:opacity-50"
+            >
+              {discordSaved ? 'Guardado ✓' : 'Guardar'}
+            </button>
+          </div>
         </div>
 
         {error && <p className="mt-4 text-sm text-accent">{error}</p>}

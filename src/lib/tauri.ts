@@ -4,6 +4,9 @@ import type { Game, Category, GameDetails, PlayStat } from './types';
 /** Unified library across every source (Steam, Epic, GOG, EA, Ubisoft, Xbox, manual). */
 export const getLibrary = () => invoke<Game[]>('get_library');
 
+/** Last computed library from disk (instant paint; empty if never scanned). */
+export const cachedLibrary = () => invoke<Game[]>('cached_library');
+
 /** Launch any library entry. */
 export const launchGame = (game: Game) => invoke<void>('launch_game', { game });
 
@@ -57,9 +60,17 @@ export const addCategory = (name: string, icon?: string | null) =>
 export const setCategoryIcon = (name: string, icon: string | null) =>
   invoke<void>('set_category_icon', { name, icon });
 
+/** Rename a category everywhere (merges if the new name already exists). */
+export const renameCategory = (oldName: string, newName: string) =>
+  invoke<void>('rename_category', { old: oldName, new: newName });
+
 /** Delete a category and strip it from every game. */
 export const removeCategory = (name: string) =>
   invoke<void>('remove_category', { name });
+
+/** Persist the explicit category order (as shown in the sidebar). */
+export const setCategoryOrder = (names: string[]) =>
+  invoke<void>('set_category_order', { names });
 
 /** Rich IGDB metadata for a game name (detail page). Null if no match. */
 export const gameDetails = (name: string) =>
@@ -68,8 +79,23 @@ export const gameDetails = (name: string) =>
 /** Accumulated play stats (seconds + last played) for a game id. */
 export const getPlaytime = (id: string) => invoke<PlayStat>('get_playtime', { id });
 
+/** Play stats for every tracked game id (for sorting the library). */
+export const allPlaytime = () =>
+  invoke<Record<string, PlayStat>>('all_playtime');
+
 /** Total size in bytes of a directory. */
 export const dirSize = (path: string) => invoke<number>('dir_size', { path });
+
+/** Extract the real icon embedded in an app's executable (cached local .ico path). */
+export const appIcon = (path: string) =>
+  invoke<string | null>('app_icon', { path });
+
+/** The saved Discord Rich Presence client id ('' = disabled). */
+export const getDiscordClientId = () => invoke<string>('get_discord_client_id');
+
+/** Save the Discord client id (applied live to the presence watcher). */
+export const setDiscordClientId = (id: string) =>
+  invoke<void>('set_discord_client_id', { id });
 
 /** Open a folder in the OS file manager. */
 export const openPath = (path: string) => invoke<void>('open_path', { path });

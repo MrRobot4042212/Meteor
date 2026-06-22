@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import type { Game, GameDetails, PlayStat } from '@/lib/types';
+import type { Game, GameDetails, PlayStat, Session } from '@/lib/types';
 import { gameDetails, getPlaytime, dirSize, openPath, userScreenshots } from '@/lib/tauri';
 import { coverSrc } from '@/lib/cover';
 import { SOURCE_META } from '@/lib/sources';
@@ -26,6 +26,12 @@ function formatPlaytime(seconds: number): string {
   const m = Math.floor((seconds % 3600) / 60);
   if (h === 0) return `${m} min`;
   return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/** Seconds played within the last `days` days (from session history). */
+function recentSeconds(history: Session[], days: number): number {
+  const cutoff = Date.now() / 1000 - days * 86400;
+  return history.reduce((acc, s) => acc + (s.end >= cutoff ? s.end - s.start : 0), 0);
 }
 
 function formatSize(bytes: number): string {
@@ -63,7 +69,7 @@ export function DetailView({
   onHide?: (g: Game) => void;
 }) {
   const [details, setDetails] = useState<GameDetails | null | undefined>(undefined);
-  const [play, setPlay] = useState<PlayStat>({ seconds: 0 });
+  const [play, setPlay] = useState<PlayStat>({ seconds: 0, history: [] });
   const [size, setSize] = useState<number | null | undefined>(undefined);
   const [shots, setShots] = useState<string[]>([]);
   const [shot, setShot] = useState<string | null>(null);
@@ -113,6 +119,7 @@ export function DetailView({
     };
   }, [game.id]);
 
+  const logo = game.cover_url ? null : game.icon ? coverSrc(game.icon) ?? null : null;
   const cover = coverSrc(game.cover_url);
   const backdrop = (shots[0] ? coverSrc(shots[0]) : undefined) ?? cover;
   const meta = SOURCE_META[game.source];
@@ -148,7 +155,12 @@ export function DetailView({
         {/* Hero */}
         <div className="flex flex-col gap-6 sm:flex-row">
           <div className="aspect-[2/3] w-44 shrink-0 self-center overflow-hidden border border-line bg-elevated shadow-card sm:self-start">
-            {cover ? (
+            {logo ? (
+              <div className="grid h-full w-full place-items-center bg-gradient-to-b from-elevated to-surface p-7">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={logo} alt={game.name} className="max-h-[60%] max-w-[80%] object-contain drop-shadow-lg" />
+              </div>
+            ) : cover ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={cover} alt={game.name} className="h-full w-full object-cover" />
             ) : (
@@ -248,8 +260,13 @@ export function DetailView({
         </div>
 
         {/* Activity metrics */}
-        <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <Metric label="Tiempo jugado" value={formatPlaytime(play.seconds)} icon={<ClockIcon className="h-4 w-4" />} />
+          <Metric
+            label="Últimos 14 días"
+            value={formatPlaytime(recentSeconds(play.history, 14))}
+          />
+          <Metric label="Sesiones" value={play.history.length > 0 ? String(play.history.length) : '—'} />
           <Metric
             label="Última vez"
             value={play.last_played ? formatLastPlayed(play.last_played) : 'Nunca'}

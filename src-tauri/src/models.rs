@@ -18,6 +18,9 @@ pub enum GameSource {
     /// Generic catch-all: anything found via the Windows uninstall registry that
     /// isn't claimed by a more specific scanner.
     Windows,
+    /// A non-game application auto-detected from the uninstall registry (browsers,
+    /// office suites, dev tools, media players…). Classified in `windows_apps.rs`.
+    App,
     Manual,
 }
 

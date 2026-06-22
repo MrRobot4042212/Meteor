@@ -1,4 +1,7 @@
+mod appicons;
+mod apps_db;
 mod art;
+mod discord;
 mod battlenet;
 mod ea;
 mod epic;
@@ -19,7 +22,7 @@ mod xbox;
 use models::{Category, Game, GameSource};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Return the unified library across every supported source, sorted by name.
 ///
@@ -80,7 +83,37 @@ fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
     }
 
     games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    // Persist for instant startup next time and for the playtime watcher's index.
+    write_library_cache(&app, &games);
     Ok(games)
+}
+
+/// Path of the on-disk snapshot of the last computed library.
+fn library_cache_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("library_cache.json"))
+}
+
+fn write_library_cache(app: &AppHandle, games: &[Game]) {
+    if let (Some(path), Ok(data)) = (library_cache_path(app), serde_json::to_string(games)) {
+        let _ = std::fs::write(path, data);
+    }
+}
+
+/// The last computed library from disk (empty if never scanned). The frontend
+/// paints this instantly, then calls `get_library` to refresh in the background.
+#[tauri::command]
+fn cached_library(app: AppHandle) -> Result<Vec<Game>, String> {
+    let Some(path) = library_cache_path(&app) else {
+        return Ok(Vec::new());
+    };
+    let list = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or_default();
+    Ok(list)
 }
 
 /// Set a manual cover URL for a game id (empty/None clears it). Overrides always
@@ -222,6 +255,18 @@ fn remove_category(app: AppHandle, name: String) -> Result<(), String> {
     storage::remove_category_name(&app, &name)
 }
 
+/// Rename a category everywhere (merges if the new name already exists).
+#[tauri::command]
+fn rename_category(app: AppHandle, old: String, new: String) -> Result<(), String> {
+    storage::rename_category_name(&app, &old, &new)
+}
+
+/// Persist the explicit category order (as shown in the sidebar).
+#[tauri::command]
+fn set_category_order(app: AppHandle, names: Vec<String>) -> Result<(), String> {
+    storage::set_category_order(&app, &names)
+}
+
 /// Rich IGDB metadata for the detail page (summary, genres, rating, shots…).
 #[tauri::command]
 fn game_details(app: AppHandle, name: String) -> Result<Option<igdb::GameDetails>, String> {
@@ -234,10 +279,39 @@ fn get_playtime(app: AppHandle, id: String) -> Result<playtime::PlayStat, String
     Ok(playtime::get(&app, &id))
 }
 
+/// Play stats for every tracked game id (for sorting the library).
+#[tauri::command]
+fn all_playtime(
+    app: AppHandle,
+) -> Result<std::collections::HashMap<String, playtime::PlayStat>, String> {
+    Ok(playtime::all(&app))
+}
+
 /// Total size in bytes of a directory (for the detail page's file info).
 #[tauri::command]
 fn dir_size(path: String) -> Result<u64, String> {
     files::dir_size(&path)
+}
+
+/// Extract the real icon embedded in an app's executable (cached PNG path), used
+/// as the icon for apps without a cover or known brand logo.
+#[tauri::command]
+fn app_icon(app: AppHandle, path: String) -> Result<Option<String>, String> {
+    Ok(appicons::extract(&app, &path))
+}
+
+/// The saved Discord Rich Presence client id (empty = disabled).
+#[tauri::command]
+fn get_discord_client_id(app: AppHandle) -> Result<String, String> {
+    Ok(storage::load_discord_client_id(&app))
+}
+
+/// Save the Discord client id and apply it live to the presence watcher.
+#[tauri::command]
+fn set_discord_client_id(app: AppHandle, id: String) -> Result<(), String> {
+    storage::save_discord_client_id(&app, &id)?;
+    discord::set_client_id(&id);
+    Ok(())
 }
 
 /// Open a folder in the OS file manager.
@@ -253,17 +327,46 @@ fn user_screenshots(app: AppHandle, game: Game) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn launch_game(app: AppHandle, game: Game) -> Result<(), String> {
-    launcher::launch(&game)?;
-    // Watch the launched game in the background to accumulate playtime.
-    playtime::track(app, game);
-    Ok(())
+fn launch_game(game: Game) -> Result<(), String> {
+    launcher::launch(&game)
+    // Playtime is accumulated by the global watcher (see `playtime::start`),
+    // which times any library game regardless of how it was launched.
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            // Global Spotlight hotkey: bring Meteor up and open the launcher palette
+            // from anywhere. The handler runs for our one registered shortcut.
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        let _ = app.emit("open-spotlight", ());
+                    }
+                })
+                .build(),
+        )
+        .setup(|app| {
+            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+            // Close any play sessions left dangling by a previous crash/force-quit,
+            // then start the global watcher that times games however they launch.
+            let handle = app.handle().clone();
+            playtime::reconcile(&handle);
+            // Load the saved Discord client id so the watcher can set Rich Presence.
+            discord::set_client_id(&storage::load_discord_client_id(&handle));
+            playtime::start(handle);
+            // Register the global Spotlight shortcut (Ctrl+Shift+Space).
+            let spotlight = Shortcut::new(Some(Modifiers::SHIFT), Code::Space);
+            let _ = app.global_shortcut().register(spotlight);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_library,
             resolve_cover,
@@ -281,9 +384,16 @@ pub fn run() {
             add_category,
             set_category_icon,
             remove_category,
+            rename_category,
+            set_category_order,
             game_details,
             get_playtime,
+            all_playtime,
+            cached_library,
             dir_size,
+            app_icon,
+            get_discord_client_id,
+            set_discord_client_id,
             open_path,
             user_screenshots,
             launch_game

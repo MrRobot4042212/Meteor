@@ -62,15 +62,54 @@ si la tienda no está instalada. `get_library` los mezcla en orden de prioridad 
   `shell:appsFolder\<AUMID>`. **Fallback** sin PowerShell: escaneo de
   `<unidad>:\XboxGames\*\Content` con `gamelaunchhelper.exe`.
 - `windows_apps.rs` — **catch-all** del registro de desinstalación (HKLM 64/32 +
-  HKCU). Filtra agresivamente (system components, runtimes, drivers, los propios
-  clientes de las tiendas…) y **clasifica** por publisher/ruta en fuentes curadas
-  (Battle.net, Riot, Rockstar, Amazon) o, si no, `GameSource::Windows`. Es ruidoso
-  por naturaleza; los falsos positivos se **ocultan** desde la UI. Lanza por exe
-  (de `DisplayIcon` o el mayor del install dir).
+  HKCU). Filtra en **dos niveles**: `is_junk` descarta lo que nunca es un item de
+  biblioteca (runtimes, drivers, components del SO, vendors de hardware, los
+  clientes de las tiendas…); lo que sobrevive lo **clasifica** `classify` por
+  publisher/ruta en fuentes curadas de juego (Battle.net, Riot, Rockstar, Amazon),
+  o como **`GameSource::App`** si `apps_db::is_app` lo reconoce como aplicación
+  (no juego), o si no `GameSource::Windows` (probable juego). Curado y heurístico:
+  los falsos positivos se **ocultan** desde la UI (las entradas `App`/`Windows`
+  llevan el icono del ojo, no el de borrar). Lanza por exe (de `DisplayIcon` o el
+  mayor del install dir). El `DisplayName` se **limpia** con `clean_name` (quita
+  versión/arquitectura: «OBS Studio 30.0.2» → «OBS Studio», «7-Zip (x64)» →
+  «7-Zip», «Git version 2.43.0» → «Git»; conserva números sin punto como
+  ediciones/años: «Office 365», «Visual Studio 2022»). El `id` deriva del nombre
+  limpio, así que cambiar la limpieza puede resetear overlays (ocultos/favoritos).
+- `apps_db.rs` — **librería grande de firmas de apps** que usa `windows_apps` para
+  separar aplicaciones de juegos. `is_app(name, publisher, install_location)` casa
+  por substring case-insensitive contra tres tablas: `APP_DIR_HINTS` (rutas
+  per-user donde no viven juegos, p. ej. `\AppData\Local\Programs\`),
+  `APP_PUBLISHERS` (editores de software: Microsoft, Google, Adobe, JetBrains,
+  VideoLAN…) y `APP_NAMES` (cientos de nombres concretos por categoría: navegadores,
+  comunicación, multimedia, creatividad, audio, ofimática, dev, utilidades, cloud,
+  seguridad/VPN, remoto, descargas, periféricos). **Aditiva**: ampliar las tablas
+  para clasificar más apps; tokens **específicos** (evitar palabras genéricas que
+  choquen con títulos de juegos). Sin match → queda como `Windows`.
 
-Lanzamiento (`launcher.rs`): Steam → `steam://rungameid`; `launch_uri` que empieza
-por `shell:` → `explorer.exe` (apps de Xbox/Store); otros `launch_uri` → protocolo;
-si no, se ejecuta `executable` directamente.
+**Icono real del .exe (logo de apps)**: las entradas `App` (y cualquiera sin
+carátula) muestran el icono **embebido en su ejecutable** — así cualquier app
+instalada (Chrome, VLC, 7-Zip, Thunderbird…) sale con su icono correcto **sin
+lista curada ni red**. `appicons.rs` lee el grupo de iconos de los **recursos PE**
+con **`pelite`** (Rust puro, sin libs nativas; se descartó `systemicons` por
+conflicto `gtk-sys` con `rfd`), escribe un `.ico` cacheado en `app_icons/<hash>.ico`
+y lo autoriza en el asset scope en runtime (WebView2 pinta `.ico` en `<img>`).
+Comando `app_icon(path)` → ruta local; `useLibrary` lo resuelve **lazy** (pasada
+aparte, solo entradas `App` sin cover, concurrencia 6, sin red). El front guarda la
+ruta en `Game.icon` (**campo solo de cliente**, no del modelo Rust) y lo pinta
+centrado en la card/detalle. Prioridad de imagen: **override manual > icono del exe
+> letra**. (Hubo una capa previa de logos SVG curados en `public/logos/` +
+`appLogos.ts`; se eliminó por redundante con el icono del exe e inconsistente.)
+**Importante**: `useLibrary` **no resuelve carátulas de IGDB para entradas `app`**
+(IGDB es de juegos → daría arte equivocado, p. ej. el navegador Brave → la película
+«Brave»); las apps se quedan con su icono del exe. El resto de fuentes (incluido el
+catch-all `windows`, «probable juego») sí piden IGDB.
+
+Lanzamiento (`launcher.rs`): Steam → `steam://rungameid`; **Battle.net → exe
+directo** (su `battlenet://` solo enfoca el launcher, no arranca el juego, así que
+se lanza el `executable` del flavor y de paso el proceso es vigilable para playtime;
+fallback a la URI si no hay exe); resto: `launch_uri` que empieza por `shell:` →
+`explorer.exe` (apps de Xbox/Store); otros `launch_uri` → protocolo; si no, se
+ejecuta `executable` directamente.
 
 **Ocultar**: `hidden.json` (`storage.rs`) guarda ids ocultos; `get_library` los
 filtra. Comandos `hide_game` / `hidden_count` / `restore_hidden`. En el front, el
@@ -90,14 +129,45 @@ Las **categorías pueden existir vacías**: `category_names.json` guarda los nom
 creados explícitamente y `category_icons.json` mapea nombre → **icono** (clave de
 un set incluido). Comandos `list_categories` (devuelve `Vec<Category>` =
 `{name, icon}`), `add_category(name, icon?)`, `set_category_icon(name, icon)`,
-`remove_category` (quita nombre, icono y lo despega de todos los juegos). El icono
-es una **clave** de `src/lib/categoryIcons.tsx` (set monocromo incluido; el usuario
-elige en una rejilla, no se inyecta SVG arbitrario). `NewCategoryDialog` tiene el
-picker; sin icono → `TagIcon` por defecto.
+`remove_category` (quita nombre, icono y lo despega de todos los juegos),
+`rename_category(old, new)` (renombra en nombres, icono y en la lista de cada
+juego; **fusiona** si `new` ya existe) y `set_category_order(names)` (persiste el
+orden en `category_names.json`; **promueve a explícitas** las categorías solo-en-uso
+que se incluyan). El icono es una **clave** de `src/lib/categoryIcons.tsx` (set
+monocromo incluido; el usuario elige en una rejilla, no se inyecta SVG arbitrario).
+`NewCategoryDialog` crea; `EditCategoryDialog` renombra/cambia icono; sin icono →
+`TagIcon` por defecto.
 
-**Sidebar en grupos separados**: «Biblioteca» (Todo/Favoritos), «Tiendas»
-(fuentes automáticas = las "por defecto" de la app) y «Categorías» (las del
-usuario, con su icono). El botón "Nueva categoría" (encima de Ajustes y un `+` en
+**Gestión de categorías en el sidebar**: cada fila de categoría es **draggable
+para reordenar** (usa el mime `application/x-meteor-cat`; al soltar, si el drag es
+de categoría reordena, si es de un juego lo asigna — así convive con el DnD de
+cards). **Click derecho** en una categoría abre un menú contextual (Editar →
+`EditCategoryDialog`; Eliminar con `confirm`): el `Sidebar` emite
+`onCategoryContextMenu(cat,x,y)` y `page.tsx` reusa el mismo `ContextMenu` que las
+cards (estado `menu` genérico `{x,y,items}`, lo comparten juego y categoría). El
+orden mostrado = orden guardado de `categoryMeta`, y las categorías solo-en-uso se
+añaden al final alfabéticamente. Reordenar/eliminar refrescan vía
+`setCategoryOrder`/`remove_category` + `refreshCategories()`/`refresh()`.
+
+**Confirmación de acciones destructivas** (`ConfirmDialog.tsx`): ocultar/quitar un
+juego o app y eliminar una categoría piden confirmación con un modal propio (Enter
+confirma, Esc cancela; botón en color `destructive`). `page.tsx` tiene un estado
+`confirm` `{title,message,confirmLabel,onConfirm}`; `handleHide`/`handleRemove`/
+`bulkHide`/`handleDeleteCategory` muestran el diálogo y la acción real vive en
+`doHide`/`doRemove`/`doBulkHide`/`doDeleteCategory` (que también cierran el detalle
+si el item afectado estaba abierto). Sustituye al `window.confirm` nativo.
+
+**Footer de atajos** (`Footer.tsx`): barra inferior fija (el layout de `page.tsx`
+es **columna**: fila `sidebar+main` con `flex-1` y el footer debajo) que lista los
+atajos con chips `<kbd>`: Ctrl+Shift+Espacio (Spotlight), clic derecho (acciones),
+Ctrl+clic (selección), arrastrar (categorizar/reordenar), ↑/↓/↵ (buscador), Esc
+(cerrar/volver). Las barras flotantes (acciones en lote, toast) van a `bottom-14`
+para no taparlo.
+
+**Sidebar en grupos separados**: «Biblioteca» (Todo/Favoritos), «Proveedores»
+(fuentes automáticas de juego = las "por defecto" de la app; excluye `app`),
+«Aplicaciones» (filtro `Apps` = `GameSource::App`, solo si hay alguna) y
+«Categorías» (las del usuario, con su icono). El botón "Nueva categoría" (encima de Ajustes y un `+` en
 la cabecera) abre `NewCategoryDialog`. `useLibrary` expone `categoryMeta` (con
 iconos) / `refreshCategories`; `page.tsx` une `categoryMeta` + categorías en uso
 (dedup por nombre, la entrada explícita conserva su icono). El filtro activo
@@ -117,12 +187,34 @@ con el valor por defecto (`true`) el webview intercepta el drop a nivel de SO
 `npm run app` (lo lee Rust al arrancar, no por hot-reload). Además los `<img>` de
 las portadas llevan `draggable={false}` para que el drag lo capture la card.
 
+**Power-user UX** (en `page.tsx`):
+- **Menú contextual** (click derecho en `GameCard` → `onContextMenu(g,x,y)`):
+  `ContextMenu.tsx` flota en el cursor (se clampa al viewport, cierra con Esc/click
+  fuera/scroll). Acciones: jugar, favorito, categorías, carátula, abrir carpeta
+  (`open_path` de `install_dir` o carpeta del exe) y ocultar/quitar según fuente.
+- **Ordenar**: `<select>` en la cabecera — Nombre (A-Z), Más jugados, Jugados
+  recientemente. Usa `playtimes` (mapa id→`PlayStat` que expone `useLibrary` vía el
+  comando `all_playtime`, recargado al evento `playtime-updated`). Se desactiva
+  mientras hay búsqueda (los resultados se ordenan por relevancia).
+- **Búsqueda fuzzy**: `src/lib/fuzzy.ts` (`fuzzyScore`, sin deps): substring directo
+  como señal fuerte, si no subsecuencia con bonus por consecutivos y por inicio de
+  palabra; con query, `visible` filtra por match y ordena por score.
+- **Selección múltiple**: botón «Seleccionar» (o **Ctrl/Cmd+click** en una card)
+  entra en `selectMode`; en ese modo el click alterna selección (`selectedIds:
+  Set`), aparece checkbox y se ocultan estrella/herramientas/overlay y el drag. Una
+  **barra flotante** muestra el nº seleccionado + acciones en lote: Todos (visibles),
+  Favorito, Categorías (`BulkCategoryDialog`, solo añade — no borra), Ocultar,
+  Cancelar. Todas optimistas (`Promise.allSettled`, revierten con `refresh()` si
+  fallan). Esc sale de selección (o cierra el detalle si está abierto).
+
 ## Carátulas y ajustes
 
 - **Fuente única: IGDB.** `art.rs` → `resolve_cover(name)` prueba varias
   **variantes del nombre** (quita símbolos ™/®, sufijos de edición) contra IGDB
-  (`igdb.rs`) y coge la portada `t_cover_big`. Todas las fuentes (incluido Steam)
-  resuelven así; `steam.rs` ya no usa el arte de su CDN.
+  (`igdb.rs`) y coge la portada **`t_cover_big_2x`** (528×748, alta resolución).
+  Todas las fuentes (incluido Steam) resuelven así; `steam.rs` ya no usa el arte de
+  su CDN. (Las carátulas ya descargadas en `covers/` no se re-piden; para subirlas a
+  2x hay que «Vaciar caché de carátulas» en Ajustes.)
 - **Caché en tres capas** (rápida → lenta): (1) imagen ya descargada en
   `covers/<hash>.jpg` → se sirve del disco, sin red; (2) URL cacheada en
   `cover_cache.json` → solo descarga la imagen, sin tocar la API; (3) consulta a
@@ -212,15 +304,60 @@ hacen `stopPropagation`).
   muestran.)
 - **Info local**: `dir_size(path)` (tamaño en disco, walk iterativo) y
   `open_path(path)` (abre carpeta) en `files.rs`.
-- **Tiempo de juego**: `playtime.rs` + crate `sysinfo`. `launch_game` ahora recibe
-  `AppHandle` y, tras lanzar, llama `playtime::track`, que en un **hilo** espera a
-  que aparezca un proceso cuyo exe esté bajo `install_dir` (o sea `executable`),
-  cronometra hasta que sale, persiste en `playtime.json` (`get_playtime(id)` →
-  `{seconds,last_played}`) y emite el evento **`playtime-updated`** (el front lo
-  escucha con `listen` y refresca). Heurístico: para juegos de tienda el proceso
-  real es otro exe, se casa por prefijo de `install_dir`; sesiones <30 s se ignoran.
+- **Tiempo de juego (watcher global)**: `playtime.rs` + crate `sysinfo`. Se **mide
+  todo desde Meteor** (no se lee el tiempo de Steam/VDF: cifras homogéneas). Un
+  **único hilo en background** (`playtime::start`, arrancado en `setup`) hace polling
+  de **todos** los procesos cada `POLL_SECS`=5 y los casa contra el **índice de la
+  biblioteca** (`library_cache.json`, recargado cada `INDEX_REFRESH_SECS`=60): un
+  juego se cronometra **se lance como se lance** (Meteor, Steam, acceso directo…),
+  ya no solo lo abierto desde la app. Matching: el exe del proceso == `executable`,
+  o está bajo `install_dir` excluyendo helpers (`EXCLUDE`: crash handlers, redist,
+  anti-cheat…). Mantiene en memoria `id → (start, last_seen)`; al desaparecer el
+  proceso cierra la sesión, persiste en `playtime.json` (`get_playtime(id)` →
+  `{seconds, last_played, history}`, **`history` = `Vec<{start,end}>`**) y emite
+  **`playtime-updated`**. Sesiones <30 s (`MIN_SESSION_SECS`) se ignoran.
+  `launch_game` ya **no** rastrea (solo lanza). **Recuperación tras cierre**: cada
+  poll vuelca las sesiones en curso a `active_sessions.json`; `playtime::reconcile`
+  (en `setup`, antes de `start`) cierra al arrancar las colgadas hasta su
+  `last_seen`. El detalle muestra tiempo jugado, **últimos 14 días** (de `history`),
+  nº de sesiones, última vez y tamaño.
 
-Comandos nuevos: `game_details`, `get_playtime`, `dir_size`, `open_path`.
+Comandos nuevos: `game_details`, `get_playtime`, `all_playtime`,
+`dir_size`, `open_path`, `app_icon`, `cached_library`, `get_discord_client_id`,
+`set_discord_client_id`.
+
+**Spotlight global** (`Spotlight.tsx` + plugin `tauri-plugin-global-shortcut`): atajo
+**Ctrl+Shift+Space** registrado en `setup`; su handler trae la ventana `main` al
+frente (show/focus/unminimize) y emite **`open-spotlight`**. El front lo escucha y
+abre una paleta: input con autofocus, búsqueda **fuzzy** (`fuzzyScore`) sobre la
+biblioteca, ↑/↓ para moverse, Enter lanza (`launch_game`), Esc cierra; sin query
+muestra favoritos primero. Funciona aunque Meteor esté minimizado/sin foco.
+
+**Arranque instantáneo (caché de biblioteca)**: `get_library` vuelca el resultado a
+`library_cache.json` al final. Al abrir, `useLibrary` pinta primero `cached_library`
+(sin splash) y luego refresca en background; solo hay splash en el **primer arranque
+real** (sin caché). El mismo fichero es el índice que usa el watcher de playtime.
+
+**IDs estables**: las entradas del registro (`windows_apps`) usan `windows:<clave de
+desinstalación>` (GUID/product code), no el nombre, así que limpiar el `DisplayName`
+o que la app se actualice **no pierde** overlays (ocultos/favoritos/categorías/
+playtime). (Cambio único de esquema: overlays previos por nombre se resetean una vez.)
+
+**Discord Rich Presence** (`discord.rs`, crate `discord-rich-presence` — IPC local,
+sin SDK): el **watcher de playtime** lo conduce. En cada poll calcula el juego
+corriendo más recientemente y, si cambia, llama `discord::set_playing(name, start)`
+(`details`=nombre, `state`=«Jugando», timer desde el inicio de la sesión) o
+`clear()` si no hay ninguno. Best-effort: si Discord no está abierto o no hay id,
+no hace nada (y reintenta porque `presence` solo se fija cuando Discord acepta).
+**Client id embebido**: `DEFAULT_CLIENT_ID` (constante, override por env
+`DISCORD_CLIENT_ID` en build) trae el Application ID de la app de Discord del
+proyecto, así **funciona para todos sin configurar nada**. El Application ID **no
+es secreto** (solo lo es el client *secret*, que RPC no usa), igual que las creds
+de IGDB. El id efectivo = override del usuario si lo hay, si no el embebido; el
+**override** es opcional, se guarda en `discord.json` (`get/set_discord_client_id`),
+se aplica en vivo (`set_client_id` cierra la conexión para reconectar) y se carga en
+`setup`. Discord muestra "Playing <nombre de esa app>" (de ahí nombrarla «Meteor»).
+`LARGE_IMAGE` (vacío) permite una imagen si se sube un asset al portal de Discord.
 `clear_cover_cache` también borra `details_cache.json`.
 
 ## Limitaciones a tener presentes

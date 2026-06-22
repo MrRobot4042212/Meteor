@@ -11,6 +11,7 @@ const FAVORITES_FILE: &str = "favorites.json";
 const CATEGORIES_FILE: &str = "categories.json";
 const CATEGORY_NAMES_FILE: &str = "category_names.json";
 const CATEGORY_ICONS_FILE: &str = "category_icons.json";
+const DISCORD_FILE: &str = "discord.json";
 
 /// Resolve a file inside the app data dir, creating the dir if needed.
 fn data_file(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
@@ -45,6 +46,23 @@ pub fn load_manual(app: &AppHandle) -> Result<Vec<Game>, String> {
 pub fn save_manual(app: &AppHandle, games: &[Game]) -> Result<(), String> {
     let path = store_path(app)?;
     let data = serde_json::to_string_pretty(games).map_err(|e| e.to_string())?;
+    fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+/// The Discord application client id for Rich Presence (empty = disabled).
+pub fn load_discord_client_id(app: &AppHandle) -> String {
+    data_file(app, DISCORD_FILE)
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|d| serde_json::from_str::<String>(&d).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the Discord client id (trimmed).
+pub fn save_discord_client_id(app: &AppHandle, id: &str) -> Result<(), String> {
+    let path = data_file(app, DISCORD_FILE)?;
+    let data = serde_json::to_string(id.trim()).map_err(|e| e.to_string())?;
     fs::write(&path, data).map_err(|e| e.to_string())
 }
 
@@ -308,6 +326,87 @@ pub fn add_category_name(app: &AppHandle, name: &str, icon: Option<&str>) -> Res
     if icon.map(str::trim).is_some_and(|i| !i.is_empty()) {
         set_category_icon(app, name, icon)?;
     }
+    Ok(())
+}
+
+/// Persist the explicit category order. Trims, drops empties and de-dupes
+/// (case-insensitive, first wins). Promotes any in-use names passed in to
+/// explicit categories so the chosen order sticks.
+pub fn set_category_order(app: &AppHandle, names: &[String]) -> Result<(), String> {
+    let mut clean: Vec<String> = Vec::new();
+    for n in names {
+        let n = n.trim();
+        if !n.is_empty() && !clean.iter().any(|c| c.eq_ignore_ascii_case(n)) {
+            clean.push(n.to_string());
+        }
+    }
+    let path = data_file(app, CATEGORY_NAMES_FILE)?;
+    let data = serde_json::to_string_pretty(&clean).map_err(|e| e.to_string())?;
+    fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+/// Rename a category everywhere: the names list (keeping its position), its icon,
+/// and every game's assigned list. If `new` already exists the two **merge**.
+pub fn rename_category_name(app: &AppHandle, old: &str, new: &str) -> Result<(), String> {
+    let new = new.trim();
+    if new.is_empty() {
+        return Err("El nombre no puede estar vacío".into());
+    }
+
+    // 1. Names list — replace old with new in place, normalizing/merging.
+    let names = load_category_names(app);
+    let new_preexists = names
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(new) && !n.eq_ignore_ascii_case(old));
+    let mut out: Vec<String> = Vec::new();
+    let mut placed = false;
+    for n in names {
+        if n.eq_ignore_ascii_case(old) {
+            if !new_preexists && !placed {
+                out.push(new.to_string());
+                placed = true;
+            }
+            // merging into an existing target → drop the old entry
+        } else if n.eq_ignore_ascii_case(new) {
+            if !placed {
+                out.push(new.to_string());
+                placed = true;
+            }
+        } else {
+            out.push(n);
+        }
+    }
+    if !placed {
+        out.push(new.to_string()); // old was in-use only → make it explicit
+    }
+    let path = data_file(app, CATEGORY_NAMES_FILE)?;
+    let data = serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?;
+    fs::write(&path, data).map_err(|e| e.to_string())?;
+
+    // 2. Icon — carry old's icon over to new if new doesn't have one already.
+    let mut icons = load_category_icons(app);
+    if let Some(icon) = icons.remove(old) {
+        icons.entry(new.to_string()).or_insert(icon);
+    }
+    let ip = data_file(app, CATEGORY_ICONS_FILE)?;
+    let id = serde_json::to_string_pretty(&icons).map_err(|e| e.to_string())?;
+    fs::write(&ip, id).map_err(|e| e.to_string())?;
+
+    // 3. Every game's list — old → new, de-duplicated case-insensitively.
+    let mut map = load_categories(app);
+    for cats in map.values_mut() {
+        let mut nc: Vec<String> = Vec::new();
+        for c in cats.drain(..) {
+            let name = if c.eq_ignore_ascii_case(old) { new.to_string() } else { c };
+            if !nc.iter().any(|x| x.eq_ignore_ascii_case(&name)) {
+                nc.push(name);
+            }
+        }
+        *cats = nc;
+    }
+    let cp = data_file(app, CATEGORIES_FILE)?;
+    let cd = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
+    fs::write(&cp, cd).map_err(|e| e.to_string())?;
     Ok(())
 }
 

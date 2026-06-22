@@ -1,0 +1,148 @@
+//! Large signature library to tell regular applications apart from games in the
+//! Windows uninstall-registry catch-all (`windows_apps.rs`).
+//!
+//! Matching is substring-based and case-insensitive against the entry's display
+//! name, publisher and install path. It is intentionally curated and additive:
+//! a match means "this is an app" → `GameSource::App`; no match leaves the entry
+//! as `GameSource::Windows` (a likely game). Keep tokens **specific** — avoid
+//! short/generic words (`go`, `code`, `player`, `studio`, `live`, `fusion`…)
+//! that collide with game titles. Add freely when an app leaks into Windows.
+
+/// Install-path fragments that strongly imply an application (per-user installs
+/// where games almost never live: Electron/user-scoped apps).
+const APP_DIR_HINTS: &[&str] = &[
+    r"\appdata\local\programs\",
+    r"\appdata\roaming\",
+];
+
+/// Publishers that ship apps/tools, never games into this catch-all. Whole-vendor
+/// signal: any entry from them is treated as an application.
+const APP_PUBLISHERS: &[&str] = &[
+    "microsoft corp", "google", "mozilla", "adobe", "jetbrains", "zoom video",
+    "slack technologies", "spotify", "videolan", "obs project", "streamlabs",
+    "igor pavlov", "rarlab", "win.rar", "audacity", "blender foundation",
+    "the gimp", "inkscape", "notion labs", "figma", "docker inc", "postman",
+    "teamviewer", "anydesk", "malwarebytes", "piriform", "telegram", "whatsapp",
+    "signal", "bitwarden", "agilebits", "brave software", "opera software",
+    "wireshark", "git for windows", "the git development", "libreoffice",
+    "the document foundation", "apache software", "foxit", "nitro software",
+    "irfanview", "dotpdn", "rizonesoft", "techsmith", "blackmagic design",
+    "openshot", "shotcut", "evernote", "doist", "atlassian", "axosoft",
+    "gitkraken", "scooter software", "sublime hq", "don ho", "the neovim",
+    "free software foundation", "anysphere", "hex-rays", "portswigger",
+    "simon tatham", "mobatek", "winscp", "qbittorrent", "the deluge",
+    "transmission project", "jdownloader", "tonec", "softdeluxe", "plex inc",
+    "foobar2000", "nullsoft", "k-lite", "kakao", "naver", "viber", "cisco",
+    "citrix", "logmein", "splashtop", "parsec", "razer", "logitech", "corsair",
+    "steelseries", "elgato", "dropbox", "mega limited", "box, inc", "boxhq",
+    "syncthing", "resilio", "kovid goyal", "corp. for digital scholarship",
+    "image-line", "ableton", "steinberg", "presonus", "native instruments",
+    "cockos", "celsys", "medibang", "systemax", "serifeurope", "serif ",
+    "krita foundation", "autodesk", "corel", "avast", "avg ", "avira",
+    "kaspersky", "bitdefender", "eset", "mcafee", "nortonlifelock", "gen digital",
+    "nordvpn", "nord security", "express vpn", "expressvpn", "proton ag",
+    "mullvad", "oracle vm virtualbox", "vmware", "parallels", "rstudio", "posit",
+    "anaconda", "balena", "akeo", "ventoy", "cpuid", "crystaldew", "rebex",
+    "hwinfo", "techpowerup", "displaylink", "wacom", "xp-pen", "huion",
+    "focusrite", "rewasd", "ryochan7", "obsidian", "logseq",
+];
+
+/// Application display-name fragments (the bulk of the library), grouped by kind.
+const APP_NAMES: &[&str] = &[
+    // Browsers
+    "chrome", "firefox", "opera gx", "opera browser", "opera stable", "brave",
+    "vivaldi", "tor browser", "chromium", "waterfox", "librewolf", "duckduckgo",
+    "maxthon", "yandex browser", "thunderbird", "mailbird", "em client",
+    // Communication
+    "zoom", "slack", "skype", "telegram", "whatsapp", "signal", "microsoft teams",
+    "webex", "viber", "kakaotalk", "wechat", "element desktop", "mattermost",
+    "rocket.chat", "mumble", "teamspeak", "ventrilo",
+    // Media players
+    "vlc", "itunes", "foobar2000", "winamp", "musicbee", "aimp", "potplayer",
+    "mpc-hc", "mpc-be", "media player classic", "kmplayer", "gom player",
+    "k-lite codec", "plex", "jellyfin", "kodi", "audacious", "clementine",
+    "deezer", "tidal", "spotify", "stremio",
+    // Image / video / 3D creative
+    "photoshop", "illustrator", "premiere pro", "after effects", "lightroom",
+    "adobe xd", "indesign", "adobe audition", "adobe acrobat", "adobe reader",
+    "gimp", "inkscape", "krita", "blender", "darktable", "rawtherapee",
+    "paint.net", "affinity photo", "affinity designer", "affinity publisher",
+    "clip studio paint", "medibang paint", "paint tool sai", "sketchbook",
+    "davinci resolve", "openshot", "shotcut", "kdenlive", "hitfilm", "camtasia",
+    "handbrake", "capcut", "filmora", "vegas pro", "vegas movie", "lightworks",
+    "natron", "synfig", "scribus", "obs studio", "streamlabs", "xsplit",
+    // Audio production
+    "audacity", "reaper", "fl studio", "ableton live", "cubase", "studio one",
+    "cakewalk", "lmms", "musescore", "guitar pro", "ardour", "mixxx",
+    "voicemeeter", "equalizer apo", "asio4all", "spitfire",
+    // Office / productivity / notes
+    "libreoffice", "openoffice", "microsoft office", "microsoft 365", "office 365",
+    "onenote", "notion", "obsidian", "evernote", "joplin", "logseq", "anytype",
+    "standard notes", "todoist", "ticktick", "trello", "asana", "clickup", "miro",
+    "milanote", "xmind", "freemind", "freeplane", "draw.io", "drawio", "scapple",
+    "zotero", "mendeley", "calibre", "sumatra pdf", "sumatrapdf", "foxit",
+    "pdf-xchange", "nitro pdf", "okular", "pdfsam", "grammarly", "anki",
+    // Developer tools / IDEs / editors
+    "visual studio code", "vs code", "vscodium", "cursor", "android studio",
+    "intellij idea", "pycharm", "webstorm", "phpstorm", "rider", "clion",
+    "goland", "datagrip", "rubymine", "eclipse ide", "apache netbeans",
+    "sublime text", "notepad++", "brackets", "geany", "code::blocks", "dev-c++",
+    "qt creator", "rad studio", "embarcadero", "rstudio", "spyder", "anaconda",
+    "miniconda", "jupyter", "dbeaver", "heidisql", "mysql workbench", "pgadmin",
+    "navicat", "sql server management", "azure data studio", "tableplus",
+    "postman", "insomnia", "fiddler", "charles", "burp suite", "wireshark",
+    "nmap", "zenmap", "putty", "mobaxterm", "termius", "winscp", "filezilla",
+    "cyberduck", "windows terminal", "github desktop", "gitkraken", "sourcetree",
+    "tortoisegit", "tortoisesvn", "smartgit", "meld", "winmerge", "beyond compare",
+    "kdiff3", "docker desktop", "rancher desktop", "podman", "virtualbox",
+    "vmware workstation", "vmware player", "msys2", "cygwin", "node.js", "nvm ",
+    "deno", "cmake", "neovim", "windows powershell", "powershell 7",
+    // Utilities / system
+    "7-zip", "winrar", "winzip", "peazip", "bandizip", "nanazip", "ccleaner",
+    "bleachbit", "revo uninstaller", "iobit uninstaller", "geek uninstaller",
+    "bulk crap uninstaller", "wiztree", "windirstat", "treesize", "everything",
+    "powertoys", "process explorer", "process hacker", "system informer",
+    "autoruns", "rufus", "ventoy", "balenaetcher", "win32 disk imager",
+    "crystaldiskinfo", "crystaldiskmark", "hwinfo", "cpu-z", "gpu-z", "hwmonitor",
+    "core temp", "msi afterburner", "rivatuner", "speccy", "aida64", "furmark",
+    "displaycal", "f.lux", "twinkle tray", "sharex", "greenshot", "lightshot",
+    "flameshot", "screenpresso", "snagit", "ditto clipboard", "autohotkey",
+    "flow launcher", "listary", "quicklook", "teracopy", "fastcopy",
+    "freefilesync", "syncthing", "resilio sync", "duplicati", "macrium",
+    "acronis", "aomei", "easeus", "minitool", "recuva", "testdisk",
+    // Cloud / sync
+    "dropbox", "google drive", "megasync", "box drive", "box sync", "pcloud",
+    "nextcloud", "owncloud", "tresorit", "icloud",
+    // Security / VPN / passwords
+    "malwarebytes", "avast", "avg antivirus", "avira", "kaspersky", "bitdefender",
+    "eset", "mcafee", "norton", "nordvpn", "expressvpn", "protonvpn", "surfshark",
+    "mullvad", "windscribe", "tunnelbear", "bitwarden", "keepass", "1password",
+    "lastpass", "dashlane", "nordpass", "authy", "veracrypt", "cryptomator",
+    "gpg4win",
+    // Remote / networking
+    "teamviewer", "anydesk", "parsec", "rustdesk", "moonlight", "nomachine",
+    "remmina", "mremoteng", "royal ts", "advanced ip scanner", "angry ip scanner",
+    // Downloads / torrent
+    "qbittorrent", "utorrent", "bittorrent", "deluge", "transmission", "vuze",
+    "tixati", "jdownloader", "internet download manager", "free download manager",
+    "motrix", "eagleget", "4k video downloader", "4k downloader", "yt-dlp",
+    // Hardware / peripheral / gaming-adjacent utilities (apps, not games)
+    "razer synapse", "razer cortex", "logitech g hub", "logitech gaming",
+    "corsair icue", "steelseries gg", "steelseries engine", "stream deck",
+    "armoury crate", "msi center", "msi dragon", "aorus engine", "ds4windows",
+    "joytokey", "antimicro", "rewasd", "reshade",
+    // Reference / education / misc
+    "google earth", "stellarium", "celestia", "geogebra", "wolfram",
+    "matlab", "octave", "rstudio", "wireshark",
+];
+
+/// True if the registry entry looks like a regular application rather than a
+/// game, by install path, publisher or product name. See module docs.
+pub fn is_app(name: &str, publisher: &str, install_location: &str) -> bool {
+    let n = name.to_lowercase();
+    let p = publisher.to_lowercase();
+    let loc = install_location.to_lowercase();
+    APP_DIR_HINTS.iter().any(|h| loc.contains(h))
+        || APP_PUBLISHERS.iter().any(|b| p.contains(b))
+        || APP_NAMES.iter().any(|b| n.contains(b))
+}

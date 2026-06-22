@@ -26,6 +26,10 @@ export function GameCard({
   onEditCategories,
   onDragStateChange,
   onOpen,
+  onContextMenu,
+  selectionMode = false,
+  selected = false,
+  onToggleSelect,
 }: {
   game: Game;
   onLaunch: (g: Game) => void;
@@ -39,7 +43,16 @@ export function GameCard({
   onDragStateChange?: (active: boolean) => void;
   /** Open the game's detail page (clicking the cover, not a tool button). */
   onOpen?: (g: Game) => void;
+  /** Right-click → context menu at the cursor. */
+  onContextMenu?: (g: Game, x: number, y: number) => void;
+  /** Multi-select mode: clicking toggles selection instead of opening detail. */
+  selectionMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (g: Game) => void;
 }) {
+  // For apps without a cover, show the real icon extracted from the exe (centered
+  // on a tile). A manual cover override still wins over it.
+  const logo = game.cover_url ? null : game.icon ? coverSrc(game.icon) ?? null : null;
   const chain = fallbackChain(game);
   const [stage, setStage] = useState(0);
   const src = chain[stage];
@@ -109,12 +122,26 @@ export function GameCard({
   return (
     <div
       ref={ref}
-      draggable
+      draggable={!selectionMode}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       onMouseMove={handleMove}
       onMouseLeave={handleLeave}
-      onClick={() => onOpen?.(game)}
+      onClick={(e) => {
+        // In selection mode (or with Ctrl/Cmd) clicking toggles selection;
+        // otherwise it opens the detail page.
+        if (selectionMode || e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          onToggleSelect?.(game);
+        } else {
+          onOpen?.(game);
+        }
+      }}
+      onContextMenu={(e) => {
+        if (!onContextMenu) return;
+        e.preventDefault();
+        onContextMenu(game, e.clientX, e.clientY);
+      }}
       style={{
         // Per-card perspective: each card has its own vanishing point at its
         // centre, so cards near the edges tilt correctly instead of skewing.
@@ -123,13 +150,43 @@ export function GameCard({
           : `perspective(700px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg) scale(${tilt.active ? 1.05 : 1})`,
         transition: tilt.active ? 'transform 90ms ease-out' : 'transform 300ms ease-out',
       }}
-      className={`group relative aspect-[2/3] cursor-grab overflow-hidden border bg-elevated shadow-card will-change-transform hover:shadow-glow active:cursor-grabbing ${
-        dragging
-          ? 'border-accent opacity-40 grayscale'
-          : 'border-line hover:border-accent/40'
+      className={`group relative aspect-[2/3] overflow-hidden border bg-elevated shadow-card will-change-transform hover:shadow-glow ${
+        selectionMode ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'
+      } ${
+        selected
+          ? 'border-accent ring-2 ring-inset ring-accent'
+          : dragging
+            ? 'border-accent opacity-40 grayscale'
+            : 'border-line hover:border-accent/40'
       }`}
     >
-      {!exhausted && src ? (
+      {/* Selection checkbox (only in selection mode) */}
+      {selectionMode && (
+        <div
+          className={`pointer-events-none absolute left-2 top-2 z-20 grid h-6 w-6 place-items-center rounded-md border-2 transition ${
+            selected ? 'border-accent bg-accent text-white' : 'border-white/70 bg-void/50'
+          }`}
+        >
+          {selected && (
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="3">
+              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+        </div>
+      )}
+
+      {logo ? (
+        <div className="flex h-full w-full items-center justify-center bg-gradient-to-b from-elevated to-surface p-8">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={logo}
+            alt={game.name}
+            loading="lazy"
+            draggable={false}
+            className="max-h-[55%] max-w-[70%] object-contain drop-shadow-lg"
+          />
+        </div>
+      ) : !exhausted && src ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={src}
@@ -157,9 +214,11 @@ export function GameCard({
         }}
       />
 
-      {/* Hover overlay */}
+      {/* Hover overlay (hidden in selection mode) */}
       <div
-        className="pointer-events-none absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-void via-void/40 to-transparent opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+        className={`pointer-events-none absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-void via-void/40 to-transparent opacity-0 transition-opacity duration-200 ${
+          selectionMode ? '' : 'group-hover:opacity-100'
+        }`}
       >
         <div className="pointer-events-auto p-3">
           <p className="mb-2 line-clamp-2 text-sm font-medium text-ink">
@@ -179,7 +238,7 @@ export function GameCard({
       </div>
 
       {/* Favorite star: persistent (gold) when favorited, else shown on hover */}
-      {onToggleFavorite && (
+      {onToggleFavorite && !selectionMode && (
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -196,9 +255,11 @@ export function GameCard({
         </button>
       )}
 
-      {/* Top-right tools */}
+      {/* Top-right tools (hidden in selection mode) */}
       <div
-        className="pointer-events-none absolute right-2 top-2 flex gap-1.5 opacity-0 transition group-hover:opacity-100"
+        className={`pointer-events-none absolute right-2 top-2 flex gap-1.5 opacity-0 transition ${
+          selectionMode ? 'hidden' : 'group-hover:opacity-100'
+        }`}
       >
         {onEditCategories && (
           <button

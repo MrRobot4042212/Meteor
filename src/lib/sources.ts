@@ -33,6 +33,7 @@ export const SOURCE_META: Record<
   rockstar: { label: 'Rockstar', dot: 'bg-foreground/50', Icon: RockstarIcon },
   amazon: { label: 'Amazon', dot: 'bg-foreground/50', Icon: AmazonIcon },
   windows: { label: 'Windows', dot: 'bg-foreground/50', Icon: WindowsIcon },
+  app: { label: 'Apps', dot: 'bg-foreground/50', Icon: AppIcon },
   manual: { label: 'Mis apps', dot: 'bg-foreground/50', Icon: AppIcon },
 };
 
@@ -49,5 +50,6 @@ export const SOURCE_ORDER: GameSource[] = [
   'rockstar',
   'amazon',
   'windows',
+  'app',
   'manual',
 ];

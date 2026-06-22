@@ -18,6 +18,18 @@ pub fn launch(game: &Game) -> Result<(), String> {
                 .ok_or_else(|| "Juego de Steam sin AppID".to_string())?;
             open_uri(&format!("steam://rungameid/{app_id}"))
         }
+        // Battle.net's `battlenet://` protocol only focuses the launcher, it
+        // doesn't start the game — so run the flavor's exe directly (which also
+        // lets us track its process for playtime). Fall back to the protocol.
+        GameSource::Battlenet => {
+            if let Some(exe) = game.executable.as_deref().filter(|e| !e.trim().is_empty()) {
+                spawn_exe(exe, &game.name)
+            } else if let Some(uri) = game.launch_uri.as_deref().filter(|u| !u.trim().is_empty()) {
+                open_uri(uri)
+            } else {
+                Err(format!("No hay forma de lanzar «{}»", game.name))
+            }
+        }
         _ => {
             if let Some(uri) = game.launch_uri.as_deref().filter(|u| !u.trim().is_empty()) {
                 open_uri(uri)

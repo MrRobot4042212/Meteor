@@ -4,7 +4,7 @@ import { useState } from 'react';
 import type { GameSource, Category } from '@/lib/types';
 import { SOURCE_META, SOURCE_ORDER } from '@/lib/sources';
 import { CATEGORY_ICONS } from '@/lib/categoryIcons';
-import { GridIcon, GearIcon, StarIcon, TagIcon, PlusIcon } from './icons';
+import { GridIcon, GearIcon, StarIcon, TagIcon, PlusIcon, AppIcon } from './icons';
 
 export type Filter = 'all' | 'favorites' | GameSource | `cat:${string}`;
 
@@ -19,11 +19,13 @@ export function Sidebar({
   onDropGame,
   isDragging = false,
   onOpenSettings,
+  onCategoryContextMenu,
+  onReorderCategories,
 }: {
   filter: Filter;
   onFilter: (f: Filter) => void;
   counts: Record<string, number>;
-  /** User categories (with icons), alphabetically sorted. */
+  /** User categories (with icons), in the user-defined order. */
   categories: Category[];
   onAddCategory: () => void;
   /** A game card was dropped onto a droppable target (Favoritos / a category). */
@@ -31,9 +33,26 @@ export function Sidebar({
   /** True while a game card is being dragged, to invite valid drop targets. */
   isDragging?: boolean;
   onOpenSettings: () => void;
+  /** Right-click a category → context menu (edit / delete) at the cursor. */
+  onCategoryContextMenu: (c: Category, x: number, y: number) => void;
+  /** Persist a new category order (full ordered list of names). */
+  onReorderCategories: (names: string[]) => void;
 }) {
   // Which droppable target the dragged card is currently hovering, for highlight.
   const [dragOver, setDragOver] = useState<Filter | null>(null);
+  // Name of the category being dragged to reorder (vs. a game being assigned).
+  const [dragCat, setDragCat] = useState<string | null>(null);
+
+  /** Move the dragged category to the dropped-on category's position. */
+  function reorderTo(targetName: string) {
+    if (!dragCat || dragCat === targetName) return;
+    const names = categories.map((c) => c.name);
+    const from = names.indexOf(dragCat);
+    const to = names.indexOf(targetName);
+    if (from < 0 || to < 0) return;
+    names.splice(to, 0, names.splice(from, 1)[0]);
+    onReorderCategories(names);
+  }
 
   // Drop handlers for a target id; only attached to Favoritos and categories.
   const dropProps = (id: Filter) => ({
@@ -58,12 +77,15 @@ export function Sidebar({
     { id: 'favorites', label: 'Favoritos', Icon: StarIcon },
   ];
 
-  // Group 2 — the app's built-in store filters (only non-empty ones).
-  const storeItems: NavItem[] = SOURCE_ORDER.filter((s) => counts[s] > 0).map((s) => ({
-    id: s as Filter,
-    label: SOURCE_META[s].label,
-    Icon: SOURCE_META[s].Icon,
-  }));
+  // Group 2 — the app's built-in store filters (only non-empty ones). Apps are
+  // split into their own group below, so exclude them here.
+  const storeItems: NavItem[] = SOURCE_ORDER.filter((s) => s !== 'app' && counts[s] > 0).map(
+    (s) => ({
+      id: s as Filter,
+      label: SOURCE_META[s].label,
+      Icon: SOURCE_META[s].Icon,
+    }),
+  );
 
   // Base row styling, plus drop-target states: a quiet dashed "ready" hint while
   // any drag is in progress, and a strong accent highlight when hovered over.
@@ -105,7 +127,7 @@ export function Sidebar({
   };
 
   const Heading = ({ children }: { children: React.ReactNode }) => (
-    <p className="px-3 pb-1 pt-5 text-[11px] font-semibold uppercase tracking-wide text-muted/70">
+    <p className="px-3 pb-1 pt-5 text-[11px] font-semibold uppercase tracking-wide text-primary">
       {children}
     </p>
   );
@@ -136,6 +158,16 @@ export function Sidebar({
         </>
       )}
 
+      {/* Group: Aplicaciones (auto-detected non-game apps) */}
+      {counts.app > 0 && (
+        <>
+          <Heading>Aplicaciones</Heading>
+          <nav className="flex flex-col gap-1">
+            {renderItem({ id: 'app', label: 'Apps', Icon: AppIcon })}
+          </nav>
+        </>
+      )}
+
       {/* Group: Categorías (user-created, drop targets), separated from defaults */}
       <div className="flex items-center justify-between pr-1">
         <Heading>Categorías</Heading>
@@ -149,25 +181,59 @@ export function Sidebar({
       </div>
       {categories.length > 0 ? (
         <nav className="flex flex-col gap-1">
-          {categories.map(({ name, icon }) => {
+          {categories.map((cat) => {
+            const { name, icon } = cat;
             const id = `cat:${name}` as Filter;
             const over = dragOver === id;
             const Icon = (icon && CATEGORY_ICONS[icon]) || TagIcon;
             return (
-              <button
+              <div
                 key={id}
-                onClick={() => onFilter(id)}
-                {...dropProps(id)}
-                className={itemClass(id, true)}
+                // Draggable to reorder; also a drop target for both a reordered
+                // category and a game card being assigned.
+                draggable
+                onDragStart={(e) => {
+                  setDragCat(name);
+                  e.dataTransfer.setData('application/x-meteor-cat', name);
+                  e.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragEnd={() => setDragCat(null)}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  const reordering = e.dataTransfer.types.includes('application/x-meteor-cat');
+                  e.dataTransfer.dropEffect = reordering ? 'move' : 'copy';
+                  if (dragOver !== id) setDragOver(id);
+                }}
+                onDragLeave={() => setDragOver((d) => (d === id ? null : d))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(null);
+                  if (e.dataTransfer.types.includes('application/x-meteor-cat')) {
+                    reorderTo(name);
+                  } else {
+                    const gameId = e.dataTransfer.getData('text/plain');
+                    if (gameId) onDropGame(id, gameId);
+                  }
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onCategoryContextMenu(cat, e.clientX, e.clientY);
+                }}
+                className={`${itemClass(id, true)} ${dragCat === name ? 'opacity-40' : ''}`}
               >
-                <Icon
-                  className={`h-[18px] w-[18px] transition-transform ${
-                    filter === id || over ? 'text-accent' : ''
-                  } ${over ? 'scale-125' : ''}`}
-                />
-                <span className="flex-1 truncate text-left">{name}</span>
+                <button
+                  onClick={() => onFilter(id)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                >
+                  <Icon
+                    className={`h-[18px] w-[18px] shrink-0 transition-transform ${
+                      filter === id || over ? 'text-accent' : ''
+                    } ${over ? 'scale-125' : ''}`}
+                  />
+                  <span className="flex-1 truncate">{name}</span>
+                </button>
                 <span className="text-xs tabular-nums text-muted">{counts[id] ?? 0}</span>
-              </button>
+              </div>
             );
           })}
         </nav>

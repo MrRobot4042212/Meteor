@@ -163,3 +163,9 @@ export const FolderIcon = (p: P) => (
     <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
   </svg>
 );
+
+export const PencilIcon = (p: P) => (
+  <svg {...base} {...p}>
+    <path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z" />
+  </svg>
+);

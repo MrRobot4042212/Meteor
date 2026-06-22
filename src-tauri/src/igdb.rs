@@ -132,10 +132,10 @@ pub fn resolve_cover(variants: &[String]) -> Option<String> {
             .or_else(|| games.iter().find(|g| g.cover.is_some()))?;
         let image_id = &chosen.cover.as_ref()?.image_id;
 
-        // `t_cover_big` is IGDB's standard portrait box-art (264×374), ideal for
-        // our 2:3 cards.
+        // `t_cover_big_2x` is the high-res portrait box-art (528×748) — twice
+        // `t_cover_big`, so covers stay crisp on HiDPI screens and the detail hero.
         return Some(format!(
-            "https://images.igdb.com/igdb/image/upload/t_cover_big/{image_id}.jpg"
+            "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/{image_id}.jpg"
         ));
     }
 

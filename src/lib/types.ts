@@ -10,6 +10,7 @@ export type GameSource =
   | 'rockstar'
   | 'amazon'
   | 'windows'
+  | 'app'
   | 'manual';
 
 /** A user-created category with an optional bundled-icon key. */
@@ -31,10 +32,17 @@ export interface GameDetails {
   screenshots: string[];
 }
 
+/** One finished play session (unix timestamps, seconds). */
+export interface Session {
+  start: number;
+  end: number;
+}
+
 /** Accumulated play stats for a game. */
 export interface PlayStat {
   seconds: number;
   last_played?: number | null;
+  history: Session[];
 }
 
 export interface Game {
@@ -50,4 +58,7 @@ export interface Game {
   favorite?: boolean;
   /** User overlay: manual categories assigned to this entry. */
   categories?: string[];
+  /** Client-side only: extracted exe icon path (apps without cover/brand logo).
+   *  Not part of the backend model; filled in lazily by `useLibrary`. */
+  icon?: string;
 }
