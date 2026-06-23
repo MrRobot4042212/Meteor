@@ -44,7 +44,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/MrRobot4042212/nexo-launcher/releases/latest/download/latest.json"
+        "https://github.com/MrRobot4042212/Meteor/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc2Q0MxMDBGOTkzRTE1MzIKUldReUZUNlpEeERNZHJIdm9MamtzV0VLcnJjSERYVG1rRWlZOWNLNnREZGt4QVhxL3UvSjhWUGIK"
     }
