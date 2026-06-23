@@ -19,7 +19,7 @@ mod ubisoft;
 mod windows_apps;
 mod xbox;
 
-use models::{Category, Game, GameSource};
+use models::{Category, Game, GameSource, AppSettings};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
@@ -55,7 +55,11 @@ fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
     // Drop entries the user has hidden (false positives from the generic scan).
     let hidden = storage::load_hidden(&app);
     if !hidden.is_empty() {
-        games.retain(|g| !hidden.iter().any(|h| h == &g.id));
+        let (visible, hidden_games): (Vec<Game>, Vec<Game>) = games.into_iter().partition(|g| !hidden.iter().any(|h| h == &g.id));
+        games = visible;
+        let _ = storage::save_hidden_cache(&app, &hidden_games);
+    } else {
+        let _ = storage::save_hidden_cache(&app, &[]);
     }
 
     // User-set cover overrides win over whatever each source provided.
@@ -78,6 +82,23 @@ fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
             }
             if let Some(cats) = categories.get(&game.id) {
                 game.categories = cats.clone();
+            }
+        }
+    }
+
+    // User override: reclassify an entry as app/game (fixes mis-detection). Since
+    // the library is re-scanned each call, "game" only needs to undo an App
+    // detection (store sources are already games), so the real source is kept
+    // whenever possible and removing the override self-heals on the next scan.
+    let type_overrides = storage::load_type_overrides(&app);
+    if !type_overrides.is_empty() {
+        for game in &mut games {
+            match type_overrides.get(&game.id).map(String::as_str) {
+                Some("app") => game.source = GameSource::App,
+                Some("game") if game.source == GameSource::App => {
+                    game.source = GameSource::Windows;
+                }
+                _ => {}
             }
         }
     }
@@ -150,10 +171,30 @@ fn clear_cover_cache(app: AppHandle) -> Result<(), String> {
     art::clear_cache(&app)
 }
 
+/// Reclassify an entry as an application or a game (`"app"` / `"game"`), or clear
+/// the override (any other value) to fall back to auto-detection.
+#[tauri::command]
+fn set_game_type(app: AppHandle, id: String, kind: String) -> Result<(), String> {
+    let k = kind.as_str();
+    storage::set_type_override(&app, &id, if k == "app" || k == "game" { Some(k) } else { None })
+}
+
 /// Hide a game from the library (e.g. a non-game picked up by the registry scan).
 #[tauri::command]
 fn hide_game(app: AppHandle, id: String) -> Result<(), String> {
     storage::set_hidden(&app, &id, true)
+}
+
+/// Unhide a game from the library.
+#[tauri::command]
+fn unhide_game(app: AppHandle, id: String) -> Result<(), String> {
+    storage::set_hidden(&app, &id, false)
+}
+
+/// Get the cached metadata of hidden games.
+#[tauri::command]
+fn get_hidden_library(app: AppHandle) -> Result<Vec<Game>, String> {
+    storage::load_hidden_cache(&app)
 }
 
 /// Number of currently-hidden games (shown in settings so they can be restored).
@@ -313,17 +354,37 @@ fn show_main(app: &AppHandle) {
 #[tauri::command]
 fn get_autostart(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("Failed to read autostart: {e}"))
 }
 
-/// Enable/disable launching Meteor on Windows login.
 #[tauri::command]
 fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    let m = app.autolaunch();
-    if enabled { m.enable() } else { m.disable() }.map_err(|e| e.to_string())
+    let auto = app.autolaunch();
+    if enabled {
+        auto.enable().map_err(|e| e.to_string())
+    } else {
+        auto.disable().map_err(|e| e.to_string())
+    }
 }
 
+#[tauri::command]
+fn get_app_settings(state: tauri::State<'_, std::sync::Mutex<AppSettings>>) -> Result<AppSettings, String> {
+    Ok(state.lock().unwrap().clone())
+}
+
+#[tauri::command]
+fn set_app_settings(
+    app: AppHandle,
+    state: tauri::State<'_, std::sync::Mutex<AppSettings>>,
+    settings: AppSettings,
+) -> Result<(), String> {
+    storage::save_settings(&app, &settings);
+    *state.lock().unwrap() = settings;
+    Ok(())
+}
 /// The saved Discord Rich Presence client id (empty = disabled).
 #[tauri::command]
 fn get_discord_client_id(app: AppHandle) -> Result<String, String> {
@@ -376,8 +437,18 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
-                    api.prevent_close();
-                    let _ = window.hide();
+                    let minimize = window
+                        .app_handle()
+                        .try_state::<std::sync::Mutex<AppSettings>>()
+                        .map(|s| s.lock().unwrap().minimize_to_tray)
+                        .unwrap_or(true);
+                    
+                    if minimize {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else {
+                        // Let it close, which exits the app.
+                    }
                 }
             }
         })
@@ -395,9 +466,13 @@ pub fn run() {
         )
         .setup(|app| {
             use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+            
+            let handle = app.handle().clone();
+            let settings = storage::load_settings(&handle);
+            app.manage(std::sync::Mutex::new(settings));
+            
             // Close any play sessions left dangling by a previous crash/force-quit,
             // then start the global watcher that times games however they launch.
-            let handle = app.handle().clone();
             playtime::reconcile(&handle);
             // Load the saved Discord client id so the watcher can set Rich Presence.
             discord::set_client_id(&storage::load_discord_client_id(&handle));
@@ -447,8 +522,11 @@ pub fn run() {
             set_cover_image,
             clear_cover_cache,
             hide_game,
+            unhide_game,
+            get_hidden_library,
             hidden_count,
             restore_hidden,
+            set_game_type,
             add_manual_app,
             remove_game,
             set_favorite,
@@ -469,6 +547,8 @@ pub fn run() {
             set_discord_client_id,
             get_autostart,
             set_autostart,
+            get_app_settings,
+            set_app_settings,
             open_path,
             user_screenshots,
             launch_game

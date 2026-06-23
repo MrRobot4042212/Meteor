@@ -36,10 +36,10 @@
   --sidebar: 20 20 20;
   --border: 74 74 74;
   --muted-foreground: 160 160 160;
-  --primary: 229 57 53;
+  --primary: 223 79 79;
   --primary-foreground: 255 255 255;
-  --primary-soft: 239 83 80;
-  --ring: 229 57 53;
+  --primary-soft: 235 100 100;
+  --ring: 223 79 79;
   --popover: 42 42 42;
   --info: 100 181 246;
   --destructive: 255 160 0;
@@ -109,6 +109,66 @@ body {
 }
 .animate-meteor-fall {
   animation: meteor-fall 2.2s linear infinite;
+}
+
+/* Staggered card entrance: fade + rise. `backwards` keeps the card invisible
+   until its delay elapses (the page sets animation-delay per index). */
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-card-in {
+  animation: card-in 380ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* Animated glow border ("beam"): a conic-gradient ring that rotates around the
+   card on hover. Masked to a 2px frame so only the border is painted. The angle
+   is a registered custom property so it can be smoothly animated. */
+@property --beam-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes beam-spin {
+  to {
+    --beam-angle: 360deg;
+  }
+}
+.card-beam {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  padding: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+  background: conic-gradient(
+    from var(--beam-angle),
+    transparent 0deg,
+    rgb(var(--primary)) 70deg,
+    rgb(var(--info)) 130deg,
+    transparent 190deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+/* Only the hovered card spins its beam (keeps idle cards cheap). */
+.group:hover > .card-beam {
+  opacity: 1;
+  animation: beam-spin 2.8s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

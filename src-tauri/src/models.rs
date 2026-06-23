@@ -15,6 +15,7 @@ pub enum GameSource {
     Riot,
     Rockstar,
     Amazon,
+    Battlestate,
     /// Generic catch-all: anything found via the Windows uninstall registry that
     /// isn't claimed by a more specific scanner.
     Windows,
@@ -74,3 +75,19 @@ pub struct Game {
     #[serde(default)]
     pub categories: Vec<String>,
 }
+
+/// Global settings configured by the user or the app itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    /// Whether the user has completed the first-run onboarding setup.
+    #[serde(default)]
+    pub setup_completed: bool,
+    /// Whether the app hides to the system tray when the main window is closed.
+    #[serde(default = "default_minimize_to_tray")]
+    pub minimize_to_tray: bool,
+}
+
+fn default_minimize_to_tray() -> bool {
+    true
+}
+

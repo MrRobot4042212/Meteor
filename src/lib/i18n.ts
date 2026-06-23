@@ -36,5 +36,41 @@ const MODES: Record<string, string> = {
   'Battle Royale': 'Battle Royale',
 };
 
+const THEMES: Record<string, string> = {
+  Action: 'Acción',
+  Fantasy: 'Fantasía',
+  'Science fiction': 'Ciencia ficción',
+  Horror: 'Terror',
+  Thriller: 'Thriller',
+  Survival: 'Supervivencia',
+  Historical: 'Histórico',
+  Stealth: 'Sigilo',
+  Comedy: 'Comedia',
+  Business: 'Negocios',
+  Drama: 'Drama',
+  'Non-fiction': 'No ficción',
+  Sandbox: 'Mundo abierto',
+  'Kids': 'Infantil',
+  Educational: 'Educativo',
+  Mystery: 'Misterio',
+  Romance: 'Romance',
+  Warfare: 'Bélico',
+  Party: 'Fiesta',
+  '4X (explore, expand, exploit, and exterminate)': '4X',
+  'Open world': 'Mundo abierto',
+};
+
+const PERSPECTIVES: Record<string, string> = {
+  'First person': 'Primera persona',
+  'Third person': 'Tercera persona',
+  'Bird view / Isometric': 'Cenital / Isométrica',
+  'Side view': 'Lateral',
+  Text: 'Texto',
+  Auditory: 'Auditiva',
+  'Virtual Reality': 'Realidad virtual',
+};
+
 export const translateGenre = (g: string): string => GENRES[g] ?? g;
 export const translateMode = (m: string): string => MODES[m] ?? m;
+export const translateTheme = (t: string): string => THEMES[t] ?? t;
+export const translatePerspective = (p: string): string => PERSPECTIVES[p] ?? p;

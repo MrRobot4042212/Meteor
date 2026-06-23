@@ -1,4 +1,4 @@
-use crate::models::{Category, Game};
+use crate::models::{AppSettings, Category, Game};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -7,11 +7,17 @@ use tauri::{AppHandle, Manager};
 const STORE_FILE: &str = "manual_apps.json";
 const OVERRIDES_FILE: &str = "cover_overrides.json";
 const HIDDEN_FILE: &str = "hidden.json";
+const HIDDEN_CACHE_FILE: &str = "hidden_cache.json";
 const FAVORITES_FILE: &str = "favorites.json";
 const CATEGORIES_FILE: &str = "categories.json";
 const CATEGORY_NAMES_FILE: &str = "category_names.json";
 const CATEGORY_ICONS_FILE: &str = "category_icons.json";
 const DISCORD_FILE: &str = "discord.json";
+/// User overrides for an entry's kind: id → "app" | "game". Lets the user fix a
+/// mis-classified item (a game detected as an app, or vice versa).
+const TYPE_OVERRIDES_FILE: &str = "type_overrides.json";
+const SETTINGS_FILE: &str = "app_settings.json";
+
 
 /// Resolve a file inside the app data dir, creating the dir if needed.
 fn data_file(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
@@ -198,6 +204,24 @@ pub fn clear_hidden(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Save the cached metadata of hidden games, so the UI can show a list to unhide.
+pub fn save_hidden_cache(app: &AppHandle, games: &[Game]) -> Result<(), String> {
+    let path = data_file(app, HIDDEN_CACHE_FILE)?;
+    let data = serde_json::to_string_pretty(games).map_err(|e| e.to_string())?;
+    fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+/// Load the cached metadata of hidden games.
+pub fn load_hidden_cache(app: &AppHandle) -> Result<Vec<Game>, String> {
+    let path = data_file(app, HIDDEN_CACHE_FILE)?;
+    if path.exists() {
+        let data = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&data).map_err(|e| e.to_string())
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 /// Ids the user marked as favorites. Applied as an overlay in `get_library`.
 /// Returns an empty list if none.
 pub fn load_favorites(app: &AppHandle) -> Vec<String> {
@@ -222,6 +246,55 @@ pub fn set_favorite(app: &AppHandle, id: &str, favorite: bool) -> Result<(), Str
     let path = data_file(app, FAVORITES_FILE)?;
     let data = serde_json::to_string_pretty(&ids).map_err(|e| e.to_string())?;
     fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+/// User overrides for an entry's kind (id → "app" | "game"), applied as an
+/// overlay in `get_library`. Returns an empty map if none are stored.
+pub fn load_type_overrides(app: &AppHandle) -> HashMap<String, String> {
+    data_file(app, TYPE_OVERRIDES_FILE)
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or_default()
+}
+
+/// Set (or clear, with `None`/`""`) the kind override for a game id. Accepts only
+/// "app" or "game"; anything else clears the override (back to auto-detection).
+pub fn set_type_override(app: &AppHandle, id: &str, kind: Option<&str>) -> Result<(), String> {
+    let mut map = load_type_overrides(app);
+    match kind {
+        Some("app") => {
+            map.insert(id.to_string(), "app".to_string());
+        }
+        Some("game") => {
+            map.insert(id.to_string(), "game".to_string());
+        }
+        _ => {
+            map.remove(id);
+        }
+    }
+    let path = data_file(app, TYPE_OVERRIDES_FILE)?;
+    let data = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
+    fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+pub fn load_settings(app: &AppHandle) -> AppSettings {
+    let Ok(path) = data_file(app, SETTINGS_FILE) else {
+        return AppSettings { setup_completed: false, minimize_to_tray: true };
+    };
+    if let Ok(data) = fs::read_to_string(path) {
+        if let Ok(settings) = serde_json::from_str(&data) {
+            return settings;
+        }
+    }
+    AppSettings { setup_completed: false, minimize_to_tray: true }
+}
+
+pub fn save_settings(app: &AppHandle, settings: &AppSettings) {
+    if let Ok(path) = data_file(app, SETTINGS_FILE) {
+        let _ = fs::write(path, serde_json::to_string_pretty(settings).unwrap_or_default());
+    }
 }
 
 /// User-assigned categories keyed by game id. Applied as an overlay in

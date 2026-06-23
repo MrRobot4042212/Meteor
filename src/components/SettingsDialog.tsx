@@ -9,6 +9,8 @@ import {
   setDiscordClientId,
   getAutostart,
   setAutostart,
+  getAppSettings,
+  setAppSettings,
 } from '@/lib/tauri';
 import { CloseIcon } from './icons';
 
@@ -26,6 +28,7 @@ export function SettingsDialog({
   const [discordId, setDiscordId] = useState('');
   const [discordSaved, setDiscordSaved] = useState(false);
   const [autostart, setAutostartState] = useState<boolean | null>(null);
+  const [tray, setTray] = useState<boolean | null>(null);
 
   useEffect(() => {
     hiddenCount()
@@ -37,6 +40,9 @@ export function SettingsDialog({
     getAutostart()
       .then(setAutostartState)
       .catch(() => setAutostartState(null));
+    getAppSettings()
+      .then((s) => setTray(s.minimize_to_tray))
+      .catch(() => setTray(null));
   }, []);
 
   async function toggleAutostart() {
@@ -47,6 +53,19 @@ export function SettingsDialog({
       await setAutostart(next);
     } catch (e) {
       setAutostartState(!next); // revert
+      setError(String(e));
+    }
+  }
+
+  async function toggleTray() {
+    if (tray === null) return;
+    const next = !tray;
+    setTray(next); // optimistic
+    try {
+      const current = await getAppSettings();
+      await setAppSettings({ ...current, minimize_to_tray: next });
+    } catch (e) {
+      setTray(!next); // revert
       setError(String(e));
     }
   }
@@ -92,7 +111,6 @@ export function SettingsDialog({
       setBusy(false);
     }
   }
-
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-void/70 p-4 backdrop-blur-sm"
@@ -169,6 +187,30 @@ export function SettingsDialog({
           </div>
         )}
 
+        {tray !== null && (
+          <div className="mt-5 border-t border-line pt-5">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-medium text-ink">Minimizar a la bandeja al cerrar</p>
+              <button
+                onClick={toggleTray}
+                role="switch"
+                aria-checked={tray}
+                className={`relative h-6 w-11 shrink-0 border transition-colors ${
+                  tray ? 'border-accent bg-accent' : 'border-line bg-elevated'
+                }`}
+              >
+                <span
+                  className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 transition-all ${
+                    tray ? 'left-6 bg-white' : 'left-1 bg-muted'
+                  }`}
+                />
+              </button>
+            </div>
+            <p className="text-xs leading-relaxed text-muted">
+              Si está activo, al cerrar Meteor la aplicación seguirá en segundo plano para registrar tu tiempo de juego.
+            </p>
+          </div>
+        )}
         {error && <p className="mt-4 text-sm text-accent">{error}</p>}
       </div>
     </div>

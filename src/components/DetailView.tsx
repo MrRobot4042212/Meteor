@@ -6,7 +6,12 @@ import type { Game, GameDetails, PlayStat, Session } from '@/lib/types';
 import { gameDetails, getPlaytime, dirSize, openPath, userScreenshots } from '@/lib/tauri';
 import { coverSrc } from '@/lib/cover';
 import { SOURCE_META } from '@/lib/sources';
-import { translateGenre, translateMode } from '@/lib/i18n';
+import {
+  translateGenre,
+  translateMode,
+  translateTheme,
+  translatePerspective,
+} from '@/lib/i18n';
 import {
   ArrowLeftIcon,
   PlayIcon,
@@ -18,6 +23,8 @@ import {
   TrashIcon,
   ClockIcon,
   CloseIcon,
+  AppIcon,
+  GridIcon,
 } from './icons';
 
 function formatPlaytime(seconds: number): string {
@@ -49,11 +56,20 @@ function formatLastPlayed(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
+/** IGDB time-to-beat seconds → "12.5 h" / "45 min" (null if absent). */
+function formatHours(seconds?: number | null): string | null {
+  if (!seconds || seconds <= 0) return null;
+  const h = seconds / 3600;
+  if (h < 1) return `${Math.round(seconds / 60)} min`;
+  return h < 10 ? `${h.toFixed(1)} h` : `${Math.round(h)} h`;
+}
+
 export function DetailView({
   game,
   onBack,
   onLaunch,
   onToggleFavorite,
+  onToggleType,
   onEditCover,
   onEditCategories,
   onRemove,
@@ -63,6 +79,7 @@ export function DetailView({
   onBack: () => void;
   onLaunch: (g: Game) => void;
   onToggleFavorite: (g: Game) => void;
+  onToggleType?: (g: Game) => void;
   onEditCover: (g: Game) => void;
   onEditCategories: (g: Game) => void;
   onRemove?: (g: Game) => void;
@@ -73,26 +90,37 @@ export function DetailView({
   const [size, setSize] = useState<number | null | undefined>(undefined);
   const [shots, setShots] = useState<string[]>([]);
   const [shot, setShot] = useState<string | null>(null);
+  // Trailer currently playing (YouTube id), null = show the thumbnail.
+  const [playId, setPlayId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'galeria' | 'videos' | 'grial' | 'local'>('galeria');
+
+  // Applications aren't games: skip all the IGDB metadata/media and screenshots.
+  const isApp = game.source === 'app';
 
   useEffect(() => {
     let alive = true;
     setDetails(undefined);
     setShots([]);
-    gameDetails(game.name)
-      .then((d) => alive && setDetails(d))
-      .catch(() => alive && setDetails(null));
+    setPlayId(null);
     getPlaytime(game.id)
       .then((p) => alive && setPlay(p))
       .catch(() => {});
-    // The user's own screenshots (Steam / Game Bar), not promotional art.
-    userScreenshots(game)
-      .then((s) => alive && setShots(s))
-      .catch(() => {});
+    if (isApp) {
+      setDetails(null); // no game metadata for apps
+    } else {
+      gameDetails(game.name)
+        .then((d) => alive && setDetails(d))
+        .catch(() => alive && setDetails(null));
+      // The user's own screenshots (Steam / Game Bar), not promotional art.
+      userScreenshots(game)
+        .then((s) => alive && setShots(s))
+        .catch(() => {});
+    }
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.id, game.name]);
+  }, [game.id, game.name, isApp]);
 
   useEffect(() => {
     let alive = true;
@@ -121,9 +149,17 @@ export function DetailView({
 
   const logo = game.cover_url ? null : game.icon ? coverSrc(game.icon) ?? null : null;
   const cover = coverSrc(game.cover_url);
-  const backdrop = (shots[0] ? coverSrc(shots[0]) : undefined) ?? cover;
+  // Promotional artwork (IGDB) makes a richer backdrop than a user screenshot.
+  const art0 = details?.artworks?.[0] ?? details?.screenshots?.[0];
+  const backdrop = art0 ?? (shots[0] ? coverSrc(shots[0]) : undefined) ?? cover;
   const meta = SOURCE_META[game.source];
   const SourceIcon = meta.Icon;
+
+  const videos = details?.videos ?? [];
+  const similar = (details?.similar ?? []).filter((s) => s.cover_url);
+  // IGDB promotional media (artworks first, then screenshots) for the gallery.
+  const gallery = [...(details?.artworks ?? []), ...(details?.screenshots ?? [])];
+  const ttb = details?.time_to_beat;
 
   return (
     <div className="relative h-full overflow-y-auto bg-background">
@@ -193,12 +229,20 @@ export function DetailView({
               {details?.developer && <span>· {details.developer}</span>}
             </div>
 
-            {/* Genres */}
-            {details?.genres && details.genres.length > 0 && (
+            {/* Genres + themes */}
+            {((details?.genres?.length ?? 0) > 0 || (details?.themes?.length ?? 0) > 0) && (
               <div className="mt-3 flex flex-wrap gap-2">
-                {details.genres.map((g) => (
+                {details?.genres?.map((g) => (
                   <span key={g} className="border border-line px-2 py-0.5 text-xs text-muted">
                     {translateGenre(g)}
+                  </span>
+                ))}
+                {details?.themes?.map((t) => (
+                  <span
+                    key={t}
+                    className="border border-accent/30 bg-accent/5 px-2 py-0.5 text-xs text-muted"
+                  >
+                    {translateTheme(t)}
                   </span>
                 ))}
               </div>
@@ -226,6 +270,18 @@ export function DetailView({
               <IconBtn title="Cambiar carátula" onClick={() => onEditCover(game)}>
                 <ImageIcon className="h-[18px] w-[18px]" />
               </IconBtn>
+              {onToggleType && (
+                <IconBtn
+                  title={game.source === 'app' ? 'Marcar como juego' : 'Marcar como aplicación'}
+                  onClick={() => onToggleType(game)}
+                >
+                  {game.source === 'app' ? (
+                    <GridIcon className="h-[18px] w-[18px]" />
+                  ) : (
+                    <AppIcon className="h-[18px] w-[18px]" />
+                  )}
+                </IconBtn>
+              )}
               {game.install_dir && (
                 <IconBtn
                   title="Abrir carpeta"
@@ -281,8 +337,10 @@ export function DetailView({
           />
         </div>
 
-        {/* Summary */}
-        <Section title="Resumen">
+        {!isApp && (
+          <>
+            {/* Summary */}
+            <Section title="Resumen">
           {details === undefined ? (
             <p className="text-sm text-muted">Cargando información…</p>
           ) : details?.summary ? (
@@ -290,7 +348,10 @@ export function DetailView({
           ) : (
             <p className="text-sm text-muted">No hay descripción disponible para este título.</p>
           )}
-          {(details?.developer || details?.publisher) && (
+          {(details?.developer ||
+            details?.publisher ||
+            details?.franchise ||
+            (details?.perspectives?.length ?? 0) > 0) && (
             <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-sm">
               {details?.developer && (
                 <span className="text-muted">
@@ -302,58 +363,253 @@ export function DetailView({
                   Editor: <span className="text-ink">{details.publisher}</span>
                 </span>
               )}
+              {details?.franchise && (
+                <span className="text-muted">
+                  Saga: <span className="text-ink">{details.franchise}</span>
+                </span>
+              )}
+              {(details?.perspectives?.length ?? 0) > 0 && (
+                <span className="text-muted">
+                  Perspectiva:{' '}
+                  <span className="text-ink">
+                    {details!.perspectives!.map(translatePerspective).join(', ')}
+                  </span>
+                </span>
+              )}
             </div>
           )}
         </Section>
 
-        {/* User screenshots (Steam / Game Bar), not promotional art */}
-        <Section title="Mis capturas">
-          {shots.length > 0 ? (
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-              {shots.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setShot(s)}
-                  className="group overflow-hidden border border-line bg-elevated"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={coverSrc(s)}
-                    alt=""
-                    loading="lazy"
-                    className="aspect-video w-full object-cover transition group-hover:scale-105"
-                  />
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted">
-              No hay capturas tuyas de este juego. Se buscan en las capturas de Steam
-              (F12) y en la galería de Windows Game Bar (Win+Alt+Impr Pant).
-            </p>
-          )}
-        </Section>
-
-        {/* Files */}
-        <Section title="Archivos">
-          <dl className="max-w-3xl divide-y divide-line text-sm">
-            <Row label="Ruta" value={game.install_dir ?? '—'} />
-            {game.executable && <Row label="Ejecutable" value={game.executable} />}
-            <Row
-              label="Tamaño en disco"
-              value={size === undefined ? 'Calculando…' : size === null ? '—' : formatSize(size)}
-            />
-          </dl>
-          {game.install_dir && (
+        {/* Tabs navigation */}
+        <div className="mt-10 mb-6 flex overflow-x-auto border-b border-line">
+          {[
+            { id: 'galeria', label: 'Galería' },
+            { id: 'videos', label: 'Vídeos' },
+            { id: 'grial', label: 'Santo Grial' },
+            { id: 'local', label: 'Local' },
+          ].map((tab) => (
             <button
-              onClick={() => openPath(game.install_dir as string)}
-              className="mt-4 flex items-center gap-2 border border-line px-3 py-2 text-sm text-ink transition hover:border-accent/50"
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`whitespace-nowrap px-6 py-3 font-display text-sm font-semibold uppercase tracking-wide transition ${
+                activeTab === tab.id
+                  ? 'border-b-2 border-accent text-accent'
+                  : 'text-muted hover:text-ink'
+              }`}
             >
-              <FolderIcon className="h-4 w-4" />
-              Abrir carpeta
+              {tab.label}
             </button>
-          )}
-        </Section>
+          ))}
+        </div>
+
+        {/* GALERÍA */}
+        {activeTab === 'galeria' && (
+          <div className="space-y-10">
+            {gallery.length > 0 && (
+              <Section title="Media Promocional">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                  {gallery.map((src) => (
+                    <button
+                      key={src}
+                      onClick={() => setShot(src)}
+                      className="group overflow-hidden border border-line bg-elevated"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={src}
+                        alt=""
+                        loading="lazy"
+                        className="aspect-video w-full object-cover transition group-hover:scale-105"
+                      />
+                    </button>
+                  ))}
+                </div>
+              </Section>
+            )}
+
+            <Section title="Mis capturas">
+              {shots.length > 0 ? (
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                  {shots.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setShot(s)}
+                      className="group overflow-hidden border border-line bg-elevated"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={coverSrc(s)}
+                        alt=""
+                        loading="lazy"
+                        className="aspect-video w-full object-cover transition group-hover:scale-105"
+                      />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted">
+                  No hay capturas tuyas de este juego. Se buscan en las capturas de Steam
+                  (F12) y en la galería de Windows Game Bar (Win+Alt+Impr Pant).
+                </p>
+              )}
+            </Section>
+          </div>
+        )}
+
+        {/* VÍDEOS */}
+        {activeTab === 'videos' && (
+          <div className="space-y-10">
+            {videos.length > 0 ? (
+              <Section title="Vídeos y Tráilers">
+                <div className="max-w-3xl">
+                  <div className="relative aspect-video w-full overflow-hidden border border-line bg-void">
+                    {playId ? (
+                      <iframe
+                        src={`https://www.youtube-nocookie.com/embed/${playId}?autoplay=1&rel=0`}
+                        title="Tráiler"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                        className="h-full w-full"
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setPlayId(videos[0])}
+                        className="group h-full w-full"
+                        title="Reproducir tráiler"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={`https://img.youtube.com/vi/${videos[0]}/hqdefault.jpg`}
+                          alt="Tráiler"
+                          className="h-full w-full object-cover opacity-80 transition group-hover:opacity-100"
+                        />
+                        <span className="absolute inset-0 grid place-items-center">
+                          <span className="grid h-16 w-16 place-items-center bg-accent/90 text-white shadow-glow transition group-hover:scale-110">
+                            <PlayIcon className="h-7 w-7" />
+                          </span>
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                  {videos.length > 1 && (
+                    <div className="mt-3 flex gap-2 overflow-x-auto pb-2">
+                      {videos.map((v) => (
+                        <button
+                          key={v}
+                          onClick={() => setPlayId(v)}
+                          className={`relative aspect-video w-28 shrink-0 overflow-hidden border transition ${
+                            playId === v ? 'border-accent' : 'border-line hover:border-accent/50'
+                          }`}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={`https://img.youtube.com/vi/${v}/mqdefault.jpg`}
+                            alt=""
+                            loading="lazy"
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Section>
+            ) : (
+              <p className="text-sm text-muted mt-8">No hay vídeos disponibles para este juego.</p>
+            )}
+          </div>
+        )}
+
+        {/* SANTO GRIAL */}
+        {activeTab === 'grial' && (
+          <div className="space-y-10">
+            {/* Time to beat */}
+            {ttb && (formatHours(ttb.hastily) || formatHours(ttb.normally) || formatHours(ttb.completely)) && (
+              <Section title="Duración (HowLongToBeat)">
+                <div className="grid max-w-2xl grid-cols-3 gap-3">
+                  <Metric label="Historia" value={formatHours(ttb.hastily) ?? '—'} />
+                  <Metric label="Normal" value={formatHours(ttb.normally) ?? '—'} />
+                  <Metric label="Al 100%" value={formatHours(ttb.completely) ?? '—'} />
+                </div>
+              </Section>
+            )}
+
+            {/* Websites */}
+            <Section title="Enlaces Externos Útiles">
+              {details?.websites && details.websites.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {details.websites.map((w) => {
+                    const info = mapWebsiteCategory(w.category);
+                    return (
+                      <a
+                        key={w.url}
+                        href={w.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80"
+                      >
+                        <div className="text-accent">{info.icon}</div>
+                        <div className="min-w-0 flex-1 truncate font-medium">{info.name}</div>
+                      </a>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-sm text-muted">No se encontraron enlaces en IGDB para este juego.</p>
+              )}
+            </Section>
+
+            {/* Similar games */}
+            {similar.length > 0 && (
+              <Section title="Juegos recomendados (Similares)">
+                <div className="flex gap-4 overflow-x-auto pb-2">
+                  {similar.map((s) => (
+                    <div key={s.name} className="w-[120px] shrink-0" title={s.name}>
+                      <div className="aspect-[2/3] overflow-hidden border border-line bg-elevated">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={s.cover_url as string}
+                          alt={s.name}
+                          loading="lazy"
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                      <p className="mt-1.5 line-clamp-2 text-xs text-muted">{s.name}</p>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            )}
+          </div>
+        )}
+
+        {/* LOCAL */}
+        {activeTab === 'local' && (
+          <div className="space-y-10">
+            <Section title="Información en Disco">
+              <dl className="max-w-3xl divide-y divide-line text-sm border border-line p-4 bg-surface/30">
+                <Row label="Directorio de Instalación" value={game.install_dir ?? 'Desconocido'} />
+                {game.executable && <Row label="Ejecutable" value={game.executable} />}
+                <Row
+                  label="Tamaño en disco"
+                  value={size === undefined ? 'Calculando…' : size === null ? '—' : formatSize(size)}
+                />
+                <Row label="Plataforma de origen" value={SOURCE_META[game.source]?.label ?? game.source} />
+              </dl>
+              {game.install_dir && (
+                <button
+                  onClick={() => openPath(game.install_dir as string)}
+                  className="mt-4 flex items-center gap-2 border border-line px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated"
+                >
+                  <FolderIcon className="h-4 w-4 text-accent" />
+                  Abrir carpeta contenedora
+                </button>
+              )}
+            </Section>
+          </div>
+        )}
+          </>
+        )}
       </div>
 
       {/* Screenshot lightbox */}
@@ -435,8 +691,35 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-4 py-2">
-      <dt className="w-32 shrink-0 text-muted">{label}</dt>
+      <dt className="w-48 shrink-0 text-muted">{label}</dt>
       <dd className="min-w-0 flex-1 break-all text-ink/90">{value}</dd>
     </div>
   );
+}
+
+function mapWebsiteCategory(category: number): { name: string; icon: React.ReactNode } {
+  const map: Record<number, string> = {
+    1: 'Sitio Oficial',
+    2: 'Wikia / Fandom',
+    3: 'Wikipedia',
+    4: 'Facebook',
+    5: 'Twitter',
+    6: 'Twitch',
+    8: 'Instagram',
+    9: 'YouTube',
+    10: 'iPhone',
+    11: 'iPad',
+    12: 'Android',
+    13: 'Steam',
+    14: 'Reddit',
+    15: 'Itch.io',
+    16: 'Epic Games',
+    17: 'GOG',
+    18: 'Discord',
+  };
+  // Fallback a un icono genérico de "Link" si no tenemos un SVG específico de esa red.
+  return {
+    name: map[category] || 'Sitio Web',
+    icon: <TagIcon className="h-4 w-4" />, // Reutilizamos TagIcon u otro como fallback para webs.
+  };
 }

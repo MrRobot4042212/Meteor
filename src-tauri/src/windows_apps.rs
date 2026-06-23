@@ -113,6 +113,8 @@ fn classify(
         GameSource::Rockstar
     } else if hay.contains("amazon games") || hay.contains(r"amazon games\library") {
         GameSource::Amazon
+    } else if hay.contains("battlestate games") || hay.contains("escape from tarkov") || hay.contains("bsglauncher") {
+        GameSource::Battlestate
     } else if crate::apps_db::is_app(name, publisher, install_location) {
         GameSource::App
     } else {
@@ -141,7 +143,7 @@ fn is_junk(name: &str, publisher: &str) -> bool {
         "steam", "epic games launcher", "gog galaxy", "ea app", "ea desktop",
         "origin", "ubisoft connect", "uplay", "battle.net", "riot client",
         "rockstar games launcher", "amazon games", "discord", "overwolf",
-        "playnite", "geforce now",
+        "playnite", "geforce now", "meteor","blender","7-zip"
     ];
     if NAME_BLOCK.iter().any(|b| n.contains(b)) {
         return true;

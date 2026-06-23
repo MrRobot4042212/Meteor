@@ -76,6 +76,7 @@ struct IndexEntry {
     install_dir: Option<String>,
     #[serde(default)]
     executable: Option<String>,
+    source: crate::models::GameSource,
 }
 
 fn now() -> u64 {
@@ -269,6 +270,13 @@ pub fn start(app: AppHandle) {
             let primary = running
                 .iter()
                 .filter_map(|id| active.get(id).map(|(s, _)| (id.clone(), *s)))
+                .filter(|(id, _)| {
+                    index
+                        .iter()
+                        .find(|e| &e.id == id)
+                        .map(|e| e.source != crate::models::GameSource::App)
+                        .unwrap_or(true)
+                })
                 .max_by_key(|(_, s)| *s)
                 .map(|(id, _)| id);
             if primary != presence {

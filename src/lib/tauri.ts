@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Game, Category, GameDetails, PlayStat } from './types';
+import type { Game, Category, GameDetails, PlayStat, AppSettings } from './types';
 
 /** Unified library across every source (Steam, Epic, GOG, EA, Ubisoft, Xbox, manual). */
 export const getLibrary = () => invoke<Game[]>('get_library');
@@ -28,11 +28,21 @@ export const clearCoverCache = () => invoke<void>('clear_cover_cache');
 /** Hide a game from the library (false positives from the registry scan). */
 export const hideGame = (id: string) => invoke<void>('hide_game', { id });
 
+/** Unhide a specific game from the library. */
+export const unhideGame = (id: string) => invoke<void>('unhide_game', { id });
+
+/** Fetch the cached list of hidden games to show them in the UI. */
+export const getHiddenLibrary = () => invoke<Game[]>('get_hidden_library');
+
 /** How many games are currently hidden. */
 export const hiddenCount = () => invoke<number>('hidden_count');
 
 /** Restore every hidden game. */
 export const restoreHidden = () => invoke<void>('restore_hidden');
+
+/** Reclassify an entry as 'app' or 'game' (any other value clears the override). */
+export const setGameType = (id: string, kind: 'app' | 'game' | '') =>
+  invoke<void>('set_game_type', { id, kind });
 
 /** Add a manual app. `coverUrl` maps to the Rust `cover_url` argument. */
 export const addManualApp = (name: string, executable: string, coverUrl?: string) =>
@@ -110,3 +120,10 @@ export const openPath = (path: string) => invoke<void>('open_path', { path });
 /** The user's own screenshots for a game (Steam + Windows Game Bar). Local paths. */
 export const userScreenshots = (game: Game) =>
   invoke<string[]>('user_screenshots', { game });
+
+/** Get application settings. */
+export const getAppSettings = () => invoke<AppSettings>('get_app_settings');
+
+/** Set application settings. */
+export const setAppSettings = (settings: AppSettings) =>
+  invoke<void>('set_app_settings', { settings });

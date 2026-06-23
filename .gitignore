@@ -17,3 +17,4 @@ next-env.d.ts
 /src-tauri/target
 .env
 CLAUDE.md
+GEMINI.md

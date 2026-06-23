@@ -30,6 +30,7 @@ export function GameCard({
   selectionMode = false,
   selected = false,
   onToggleSelect,
+  index = 0,
 }: {
   game: Game;
   onLaunch: (g: Game) => void;
@@ -49,6 +50,8 @@ export function GameCard({
   selectionMode?: boolean;
   selected?: boolean;
   onToggleSelect?: (g: Game) => void;
+  /** Position in the grid, for the staggered entrance animation delay. */
+  index?: number;
 }) {
   // For apps without a cover, show the real icon extracted from the exe (centered
   // on a tile). A manual cover override still wins over it.
@@ -120,6 +123,10 @@ export function GameCard({
   }
 
   return (
+    <div
+      className="animate-card-in"
+      style={{ animationDelay: `${Math.min(index, 24) * 30}ms` }}
+    >
     <div
       ref={ref}
       draggable={!selectionMode}
@@ -316,6 +323,11 @@ export function GameCard({
         className={`pointer-events-none absolute bottom-2 right-2 z-10 h-2 w-2 rounded-full ${SOURCE_META[game.source].dot}`}
         title={SOURCE_META[game.source].label}
       />
+
+      {/* Animated glow border on hover (spins only while hovered). Hidden in
+          selection mode, where the accent selection ring takes over. */}
+      {!selectionMode && <div className="card-beam" aria-hidden />}
+    </div>
     </div>
   );
 }

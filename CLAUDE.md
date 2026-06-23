@@ -115,6 +115,20 @@ ejecuta `executable` directamente.
 filtra. Comandos `hide_game` / `hidden_count` / `restore_hidden`. En el front, el
 icono del ojo en cada card oculta; Ajustes restaura.
 
+**Reclasificar juego ↔ aplicación**: la auto-clasificación (`windows_apps`/`apps_db`)
+falla a veces, así que el usuario puede forzar el tipo. `type_overrides.json` mapea id
+→ `"app"`/`"game"`; `get_library` lo aplica como overlay **tras el escaneo** (sobre
+`source`): `"app"` → `GameSource::App`; `"game"` solo deshace una detección `App` (→
+`Windows`), así que como la biblioteca **se re-escanea** cada vez, la fuente real de
+tienda se conserva siempre que se pueda y quitar el override se auto-cura. Comando
+`set_game_type(id, kind)` (`"app"`/`"game"`; otro valor limpia). En el front, item del
+menú contextual («Marcar como aplicación/juego») y botón en `DetailView`; el handler
+`handleToggleType` es optimista (refleja el mapeo del back: →app=`app`, →game=`windows`,
+limpia el `icon` del exe) y luego `refresh()` para reconciliar carátulas/agrupación (un
+ahora-juego pide arte de IGDB; un ahora-app usa el icono del exe). Reordena solo: las
+secciones del Sidebar (Proveedores vs Aplicaciones) y del Home (juegos vs apps) leen
+`source`.
+
 **Favoritos y categorías**: overlays de usuario aplicados en `get_library` (igual
 patrón que ocultos/carátulas), válidos para **cualquier** fuente. `favorites.json`
 guarda ids favoritos; `categories.json` mapea id → `Vec<String>` de categorías.
@@ -278,6 +292,18 @@ scale `borderRadius` está sobreescrito a `0` en `tailwind.config.ts` (look
 modernista de esquinas rectas), así que todos los `rounded-*` (incluido
 `rounded-full`) son rectos sin tocar componentes.
 
+**Efectos de las `GameCard`** (en `GameCard.tsx` + keyframes en `globals.css`):
+además del **tilt 3D + glare** que sigue al cursor (transform por card con
+perspectiva propia), cada card tiene: (1) **entrada escalonada** — un wrapper con
+`.animate-card-in` (fade + subida, `cubic-bezier` con `backwards`) y
+`animation-delay` por `index` del grid (`min(index,24)*30ms`), que solo se reproduce
+al montar (las cards van keyed por `id`, así que reordenar/filtrar no la repite); (2)
+**borde con glow animado** (`.card-beam`) — un `conic-gradient` rojo→azul enmascarado
+a un marco de 2px (`mask-composite: exclude`) cuyo ángulo (`@property --beam-angle`)
+**gira solo en hover** (`.group:hover > .card-beam`, idle barato). Ambos respetan
+`prefers-reduced-motion`. El **beam** se oculta en modo selección (gana el ring de
+selección).
+
 ## Página de detalle (por juego)
 
 Export estático → **no hay rutas dinámicas de servidor**; el detalle es **routing
@@ -289,12 +315,24 @@ hacen `stopPropagation`).
 `DetailView.tsx` carga sus datos lazy al abrir:
 - **Metadatos IGDB** (`game_details(name)` → `igdb::fetch_details`, cacheado en
   `details_cache.json` por `art::details`, mismo patrón que carátulas con
-  `NEGATIVE_TTL`): sinopsis, géneros, modos, año, dev/editor, rating. Géneros y
-  modos se traducen a **castellano** con `src/lib/i18n.ts` (mapa fijo, fallback al
-  original). La **sinopsis se traduce** con `translate.rs` (endpoint gratuito de
-  **Google Translate** `gtx`, `tl=es`, con caché en `translate_cache.json` por
-  hash del texto); `art::details` la traduce antes de cachear los detalles, con
-  fallback al inglés si la petición falla.
+  `NEGATIVE_TTL`): sinopsis, géneros, modos, año, dev/editor, rating, **temas,
+  perspectiva, saga/franquicia, artworks promocionales, vídeos (ids de YouTube),
+  juegos similares (nombre + carátula)** y **tiempo para completar** (`time_to_beat`:
+  historia/normal/100%, en segundos, vía el endpoint **oficial**
+  `/v4/game_time_to_beats` de IGDB con el `id` del juego —sin scraping de HLTB). Los
+  campos nuevos son `#[serde(default)]`, así que entradas cacheadas viejas siguen
+  deserializando (se rellenan vacías hasta que se refresca la caché; «Vaciar caché de
+  carátulas» borra también `details_cache.json` y repuebla). Géneros, modos, **temas y
+  perspectiva** se traducen a **castellano** con `src/lib/i18n.ts` (mapas fijos,
+  fallback al original). La **sinopsis se traduce** con `translate.rs` (endpoint
+  gratuito de **Google Translate** `gtx`, `tl=es`, con caché en
+  `translate_cache.json` por hash del texto); `art::details` la traduce antes de
+  cachear, con fallback al inglés si falla.
+  En `DetailView.tsx` esto pinta: chips de temas junto a géneros, sección **Duración**
+  (3 cards), **Tráiler** (YouTube `youtube-nocookie` con click-to-play para no cargar
+  el embed de golpe; tira de miniaturas si hay varios), **Galería** (artworks +
+  screenshots IGDB, con el mismo lightbox que las capturas) y **Juegos similares**
+  (fila scroll-x, solo visual). El backdrop del hero prefiere un artwork de IGDB.
 - **Capturas propias del usuario** (no arte promocional): `user_screenshots(game)`
   → `screenshots.rs` reúne las de **Steam** (`userdata/<acc>/760/remote/<appid>/
   screenshots`) y **Windows Game Bar** (`Vídeos/Captures`, por prefijo de nombre),
