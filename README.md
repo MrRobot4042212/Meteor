@@ -90,5 +90,3 @@ src-tauri/                # Núcleo Rust
   capabilities/           # permisos (core + dialog)
   tauri.conf.json
 ```
-
-Consulta `CLAUDE.md` para el contrato del proyecto y las siguientes fases.
