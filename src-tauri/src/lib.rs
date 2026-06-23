@@ -300,6 +300,30 @@ fn app_icon(app: AppHandle, path: String) -> Result<Option<String>, String> {
     Ok(appicons::extract(&app, &path))
 }
 
+/// Bring the main window to the front (used by the tray and Spotlight).
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// Whether Meteor is set to launch on Windows login.
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// Enable/disable launching Meteor on Windows login.
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let m = app.autolaunch();
+    if enabled { m.enable() } else { m.disable() }.map_err(|e| e.to_string())
+}
+
 /// The saved Discord Rich Presence client id (empty = disabled).
 #[tauri::command]
 fn get_discord_client_id(app: AppHandle) -> Result<String, String> {
@@ -337,17 +361,30 @@ fn launch_game(game: Game) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Launch on login (Windows registry Run key). The MacosLauncher arg is
+        // ignored on Windows; no launch args needed.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        // Closing the main window hides Meteor to the tray instead of quitting,
+        // so the playtime/Discord/Spotlight watchers keep running. Real quit is
+        // the tray's "Salir" item.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .plugin(
             // Global Spotlight hotkey: bring Meteor up and open the launcher palette
             // from anywhere. The handler runs for our one registered shortcut.
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
                     if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.unminimize();
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
+                        show_main(app);
                         let _ = app.emit("open-spotlight", ());
                     }
                 })
@@ -365,6 +402,39 @@ pub fn run() {
             // Register the global Spotlight shortcut (Ctrl+Shift+Space).
             let spotlight = Shortcut::new(Some(Modifiers::SHIFT), Code::Space);
             let _ = app.global_shortcut().register(spotlight);
+
+            // System tray: Meteor lives in the tray so the watchers keep running
+            // after the window is closed. Left-click or "Mostrar Meteor" reopens
+            // the window; "Salir" really quits.
+            {
+                use tauri::menu::{Menu, MenuItem};
+                use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+                let show = MenuItem::with_id(app, "show", "Mostrar Meteor", true, None::<&str>)?;
+                let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show, &quit])?;
+                let _tray = TrayIconBuilder::with_id("main")
+                    .icon(app.default_window_icon().unwrap().clone())
+                    .tooltip("Meteor")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => show_main(app),
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            show_main(tray.app_handle());
+                        }
+                    })
+                    .build(app)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -394,6 +464,8 @@ pub fn run() {
             app_icon,
             get_discord_client_id,
             set_discord_client_id,
+            get_autostart,
+            set_autostart,
             open_path,
             user_screenshots,
             launch_game

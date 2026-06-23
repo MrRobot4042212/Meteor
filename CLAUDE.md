@@ -324,7 +324,7 @@ hacen `stopPropagation`).
 
 Comandos nuevos: `game_details`, `get_playtime`, `all_playtime`,
 `dir_size`, `open_path`, `app_icon`, `cached_library`, `get_discord_client_id`,
-`set_discord_client_id`.
+`set_discord_client_id`, `get_autostart`, `set_autostart`.
 
 **Spotlight global** (`Spotlight.tsx` + plugin `tauri-plugin-global-shortcut`): atajo
 **Ctrl+Shift+Space** registrado en `setup`; su handler trae la ventana `main` al
@@ -332,6 +332,18 @@ frente (show/focus/unminimize) y emite **`open-spotlight`**. El front lo escucha
 abre una paleta: input con autofocus, búsqueda **fuzzy** (`fuzzyScore`) sobre la
 biblioteca, ↑/↓ para moverse, Enter lanza (`launch_game`), Esc cierra; sin query
 muestra favoritos primero. Funciona aunque Meteor esté minimizado/sin foco.
+
+**Bandeja del sistema + autostart** (en `lib.rs`): Meteor es un launcher que vive
+en background (watcher de playtime, Discord, Spotlight global). Por eso **cerrar la
+ventana `main` no mata el proceso**: el handler `on_window_event` intercepta
+`CloseRequested` de `main`, hace `prevent_close()` + `window.hide()`. Un **tray icon**
+(`TrayIconBuilder` en `setup`, feature `tray-icon` + `image-png` de tauri; usa
+`default_window_icon`) con menú **Mostrar Meteor / Salir**: click izquierdo o
+«Mostrar» reabren la ventana (`show_main`, helper compartido con el handler de
+Spotlight); «Salir» hace `app.exit(0)` (única salida real). **Iniciar con Windows**
+vía `tauri-plugin-autostart` (escribe la Run key del registro): comandos propios
+`get_autostart`/`set_autostart` (no se llama al plugin desde JS, así que no necesita
+capability), toggle en `SettingsDialog` (optimista, revierte si falla).
 
 **Arranque instantáneo (caché de biblioteca)**: `get_library` vuelca el resultado a
 `library_cache.json` al final. Al abrir, `useLibrary` pinta primero `cached_library`

@@ -97,6 +97,13 @@ export const getDiscordClientId = () => invoke<string>('get_discord_client_id');
 export const setDiscordClientId = (id: string) =>
   invoke<void>('set_discord_client_id', { id });
 
+/** Whether Meteor launches on Windows login. */
+export const getAutostart = () => invoke<boolean>('get_autostart');
+
+/** Enable/disable launching Meteor on Windows login. */
+export const setAutostart = (enabled: boolean) =>
+  invoke<void>('set_autostart', { enabled });
+
 /** Open a folder in the OS file manager. */
 export const openPath = (path: string) => invoke<void>('open_path', { path });
 

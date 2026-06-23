@@ -16,3 +16,4 @@ next-env.d.ts
 # rust / tauri
 /src-tauri/target
 .env
+CLAUDE.md
