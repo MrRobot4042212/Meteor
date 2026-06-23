@@ -351,6 +351,21 @@ top 6 por `seconds` y mostrado solo si tiene entradas. Sin datos de playtime
 muestra un fallback con favoritos/primeros juegos. Cards propias ligeras (`Thumb`
 replica la cascada carátula→icono exe→letra de `GameCard`, sin tilt/drag).
 
+**Auto-update** (`UpdatePrompt.tsx` + plugins `tauri-plugin-updater`/`-process`):
+al arrancar, `check()` consulta el endpoint `releases/latest/download/latest.json`
+del repo de GitHub; si hay versión nueva (firmada), muestra un banner abajo-derecha
+con `downloadAndInstall` (barra de progreso) → `relaunch()`. Silencioso si está al
+día, sin red o en **dev** (la comprobación falla y se ignora en try/catch). Config en
+`tauri.conf.json`: `bundle.createUpdaterArtifacts: true` y `plugins.updater`
+(`endpoints` + `pubkey`). Permisos `updater:default` + `process:default` en la
+capability `default`. **Firma**: la release se firma con una clave Ed25519; la
+**privada** va en GitHub Secrets (`TAURI_SIGNING_PRIVATE_KEY` +
+`_PASSWORD`), la **pública** en `tauri.conf.json` (`pubkey`). El workflow
+`.github/workflows/release.yml` (en push de tag `v*`) compila en `windows-latest`
+con `tauri-action`, firma, crea la Release y sube `latest.json`. **Importante**: con
+`createUpdaterArtifacts` activo, un `tauri build` local **necesita** las env vars de
+firma o falla; los builds de release se hacen vía el workflow.
+
 **Bandeja del sistema + autostart** (en `lib.rs`): Meteor es un launcher que vive
 en background (watcher de playtime, Discord, Spotlight global). Por eso **cerrar la
 ventana `main` no mata el proceso**: el handler `on_window_event` intercepta

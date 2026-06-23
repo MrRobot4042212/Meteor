@@ -21,6 +21,10 @@ tauri-plugin-global-shortcut = "2"
 # Launch Meteor on Windows login so the playtime/Discord watcher runs in the
 # background without the user opening the window first.
 tauri-plugin-autostart = "2"
+# In-app auto-update: check GitHub Releases for a newer signed build, download
+# and install it, then relaunch (process plugin) — no manual reinstall.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 steamlocate = "2.1"

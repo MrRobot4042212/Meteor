@@ -30,6 +30,7 @@ import { Footer } from '@/components/Footer';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DetailView } from '@/components/DetailView';
 import { Home } from '@/components/Home';
+import { UpdatePrompt } from '@/components/UpdatePrompt';
 import { SOURCE_ORDER } from '@/lib/sources';
 import { fuzzyScore } from '@/lib/fuzzy';
 import {
@@ -627,6 +628,8 @@ export default function Page() {
       </div>
 
       <Footer />
+
+      <UpdatePrompt />
 
       {showAdd && (
         <AddAppDialog

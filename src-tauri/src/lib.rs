@@ -367,6 +367,9 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // In-app auto-update (checks GitHub Releases) + relaunch after install.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // Closing the main window hides Meteor to the tray instead of quitting,
         // so the playtime/Discord/Spotlight watchers keep running. Real quit is
         // the tray's "Salir" item.
