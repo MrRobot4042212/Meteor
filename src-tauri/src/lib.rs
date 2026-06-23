@@ -363,6 +363,14 @@ fn get_autostart(app: AppHandle) -> Result<bool, String> {
 fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let auto = app.autolaunch();
+    // Idempotente: si ya está en el estado pedido no hacemos nada. Evita que
+    // `disable()` falle con "el sistema no puede encontrar el archivo
+    // especificado (os error 2)" al borrar la clave Run del registro cuando
+    // nunca estuvo activado (y lo simétrico al activar uno ya activo).
+    let already = auto.is_enabled().unwrap_or(false);
+    if enabled == already {
+        return Ok(());
+    }
     if enabled {
         auto.enable().map_err(|e| e.to_string())
     } else {
