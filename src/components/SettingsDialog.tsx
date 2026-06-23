@@ -150,13 +150,13 @@ export function SettingsDialog({
                 onClick={toggleAutostart}
                 role="switch"
                 aria-checked={autostart}
-                className={`relative h-5 w-9 rounded-full transition-colors ${
-                  autostart ? 'bg-accent' : 'bg-elevated'
+                className={`relative h-6 w-11 shrink-0 border transition-colors ${
+                  autostart ? 'border-accent bg-accent' : 'border-line bg-elevated'
                 }`}
               >
                 <span
-                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                    autostart ? 'translate-x-4' : 'translate-x-0.5'
+                  className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 transition-all ${
+                    autostart ? 'left-6 bg-white' : 'left-1 bg-muted'
                   }`}
                 />
               </button>

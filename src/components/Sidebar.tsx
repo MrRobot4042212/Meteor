@@ -4,9 +4,9 @@ import { useState } from 'react';
 import type { GameSource, Category } from '@/lib/types';
 import { SOURCE_META, SOURCE_ORDER } from '@/lib/sources';
 import { CATEGORY_ICONS } from '@/lib/categoryIcons';
-import { GridIcon, GearIcon, StarIcon, TagIcon, PlusIcon, AppIcon } from './icons';
+import { GridIcon, GearIcon, StarIcon, TagIcon, PlusIcon, AppIcon, HomeIcon } from './icons';
 
-export type Filter = 'all' | 'favorites' | GameSource | `cat:${string}`;
+export type Filter = 'home' | 'all' | 'favorites' | GameSource | `cat:${string}`;
 
 type NavItem = { id: Filter; label: string; Icon: typeof GridIcon };
 
@@ -73,6 +73,7 @@ export function Sidebar({
   // Group 1 — the library itself: everything + favorites. Favoritos is always
   // shown so it can act as a permanent drop target (drag a game in to favorite).
   const libraryItems: NavItem[] = [
+    { id: 'home', label: 'Inicio', Icon: HomeIcon },
     { id: 'all', label: 'Todo', Icon: GridIcon },
     { id: 'favorites', label: 'Favoritos', Icon: StarIcon },
   ];
@@ -121,7 +122,9 @@ export function Sidebar({
           } ${over ? 'scale-125' : ''}`}
         />
         <span className="flex-1 truncate text-left">{label}</span>
-        <span className="text-xs tabular-nums text-muted">{counts[id] ?? 0}</span>
+        {id !== 'home' && (
+          <span className="text-xs tabular-nums text-muted">{counts[id] ?? 0}</span>
+        )}
       </button>
     );
   };

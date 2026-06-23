@@ -333,6 +333,24 @@ abre una paleta: input con autofocus, búsqueda **fuzzy** (`fuzzyScore`) sobre l
 biblioteca, ↑/↓ para moverse, Enter lanza (`launch_game`), Esc cierra; sin query
 muestra favoritos primero. Funciona aunque Meteor esté minimizado/sin foco.
 
+**Home / Dashboard** (`Home.tsx`, filtro `home` del Sidebar, **vista por defecto** al
+abrir): no toca Rust, todo se deriva en cliente de `games` + `playtimes` (el mapa
+id→`PlayStat` con `history` que ya expone `useLibrary`). `page.tsx` define
+`showingHome = filter === 'home' && !query.trim()`; si se cumple, el `<main>` pinta
+`<Home>` en vez de la grid y oculta el orden + «Seleccionar» (no hay grid). **Buscar
+desde Inicio** funciona: con query, `home` cae en `inFilter = todos` y se muestran
+resultados fuzzy como una grid normal. Secciones del dashboard: tarjetas de stats
+(tiempo total, esta semana, sesiones 7d, juegos jugados), **gráfica de barras de los
+últimos 7 días** (buckets con límites en **medianoches locales reales** —no pasos de
+24h fijos, así el cambio de hora/DST no descuadra— y cada sesión de `history` se
+**reparte entre los días que abarca** clipando `[start,end]` contra cada ventana, así
+una sesión que cruza medianoche cuenta en ambos días; hoy resaltado en `accent`), **«Continuar jugando»** (fila scroll-x por
+`last_played` desc) y dos rankings separados por `source` (`RankList`): **«Juegos más
+jugados»** (`source !== 'app'`) y **«Apps más usadas»** (`source === 'app'`), cada uno
+top 6 por `seconds` y mostrado solo si tiene entradas. Sin datos de playtime
+muestra un fallback con favoritos/primeros juegos. Cards propias ligeras (`Thumb`
+replica la cascada carátula→icono exe→letra de `GameCard`, sin tilt/drag).
+
 **Bandeja del sistema + autostart** (en `lib.rs`): Meteor es un launcher que vive
 en background (watcher de playtime, Discord, Spotlight global). Por eso **cerrar la
 ventana `main` no mata el proceso**: el handler `on_window_event` intercepta
@@ -388,8 +406,8 @@ SteamGridDB con fallback a Steam CDN.
    de Windows (claves de desinstalación del registro + accesos del menú inicio).
 2. **Más metadatos**: géneros/IGDB; mejor *matching* de nombre → arte (ahora se
    coge el primer resultado, puede fallar en títulos ambiguos).
-3. **Calidad de vida**: ~~favoritos~~ ✓ y "jugados recientemente",
-   ~~categorías/etiquetas~~ ✓, ordenación (pendiente).
+3. **Calidad de vida**: ~~favoritos~~ ✓, ~~"jugados recientemente"~~ ✓ (Home),
+   ~~categorías/etiquetas~~ ✓, ~~ordenación~~ ✓.
 4. **Tiempo de juego**: vigilar el proceso lanzado y acumular horas por juego.
 5. **Opcional en la nube**: backend Nest.js para sincronizar biblioteca y ajustes
    entre varios PCs (aquí sí entraría Nest, no antes).

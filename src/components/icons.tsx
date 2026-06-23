@@ -169,3 +169,21 @@ export const PencilIcon = (p: P) => (
     <path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z" />
   </svg>
 );
+
+export const HomeIcon = (p: P) => (
+  <svg {...base} {...p}>
+    <path d="M3 11l9-7 9 7M5 10v9a1 1 0 001 1h12a1 1 0 001-1v-9" />
+  </svg>
+);
+
+export const FireIcon = (p: P) => (
+  <svg {...base} {...p}>
+    <path d="M12 3c1 4-2 5-2 8a2 2 0 104 0c0-1 .5-2 1-2.5C16 11 17 13 17 15a5 5 0 11-10 0c0-4 3-6 5-12z" />
+  </svg>
+);
+
+export const TrophyIcon = (p: P) => (
+  <svg {...base} {...p}>
+    <path d="M8 4h8v4a4 4 0 01-8 0V4zM6 5H4v2a3 3 0 003 3M18 5h2v2a3 3 0 01-3 3M9 20h6M12 13v4" />
+  </svg>
+);

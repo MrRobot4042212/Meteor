@@ -29,6 +29,7 @@ import { Spotlight } from '@/components/Spotlight';
 import { Footer } from '@/components/Footer';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DetailView } from '@/components/DetailView';
+import { Home } from '@/components/Home';
 import { SOURCE_ORDER } from '@/lib/sources';
 import { fuzzyScore } from '@/lib/fuzzy';
 import {
@@ -75,7 +76,7 @@ export default function Page() {
     playtimes,
   } = useLibrary();
   const [splashDone, setSplashDone] = useState(false);
-  const [filter, setFilter] = useState<Filter>('all');
+  const [filter, setFilter] = useState<Filter>('home');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<SortKey>('name');
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
@@ -101,6 +102,9 @@ export default function Page() {
 
   // The game whose detail page is open (kept fresh from `games` by id).
   const selected = selectedId ? games.find((g) => g.id === selectedId) ?? null : null;
+
+  // The dashboard replaces the grid on the "Inicio" filter (unless searching).
+  const showingHome = filter === 'home' && !query.trim();
 
   // Categories shown in the sidebar: explicitly-created ones first, in their saved
   // order (with icons, persist even when empty), then any in-use-only ones
@@ -142,7 +146,8 @@ export default function Page() {
 
   const visible = useMemo(() => {
     const inFilter = games.filter((g) => {
-      if (filter === 'all') return true;
+      // Home has no own grid; when a query is typed there we search everything.
+      if (filter === 'all' || filter === 'home') return true;
       if (filter === 'favorites') return !!g.favorite;
       if (filter.startsWith('cat:')) return g.categories?.includes(filter.slice(4)) ?? false;
       return g.source === filter;
@@ -518,31 +523,36 @@ export default function Page() {
             />
           </div>
 
-          {/* Sort (disabled while searching: results are ranked by relevance) */}
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortKey)}
-            disabled={!!query.trim()}
-            title="Ordenar"
-            className="h-10 rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none transition hover:text-ink focus:border-accent/50 disabled:opacity-40"
-          >
-            {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
-              <option key={k} value={k}>
-                {SORT_LABELS[k]}
-              </option>
-            ))}
-          </select>
+          {/* Sort (disabled while searching: results are ranked by relevance).
+              Hidden on the dashboard, which has no grid to sort. */}
+          {!showingHome && (
+            <>
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortKey)}
+                disabled={!!query.trim()}
+                title="Ordenar"
+                className="h-10 rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none transition hover:text-ink focus:border-accent/50 disabled:opacity-40"
+              >
+                {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
+                  <option key={k} value={k}>
+                    {SORT_LABELS[k]}
+                  </option>
+                ))}
+              </select>
 
-          <button
-            onClick={() => (selectMode ? exitSelection() : setSelectMode(true))}
-            className={`h-10 rounded-lg border px-3 text-sm transition ${
-              selectMode
-                ? 'border-accent bg-accent/15 text-ink'
-                : 'border-line bg-surface text-muted hover:text-ink'
-            }`}
-          >
-            {selectMode ? 'Cancelar' : 'Seleccionar'}
-          </button>
+              <button
+                onClick={() => (selectMode ? exitSelection() : setSelectMode(true))}
+                className={`h-10 rounded-lg border px-3 text-sm transition ${
+                  selectMode
+                    ? 'border-accent bg-accent/15 text-ink'
+                    : 'border-line bg-surface text-muted hover:text-ink'
+                }`}
+              >
+                {selectMode ? 'Cancelar' : 'Seleccionar'}
+              </button>
+            </>
+          )}
 
           <button
             onClick={handleRescan}
@@ -563,7 +573,14 @@ export default function Page() {
 
         {/* Content */}
         <section className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-          {loading && games.length === 0 ? (
+          {filter === 'home' && !query.trim() ? (
+            <Home
+              games={games}
+              playtimes={playtimes}
+              onOpen={(g) => setSelectedId(g.id)}
+              onLaunch={handleLaunch}
+            />
+          ) : loading && games.length === 0 ? (
             <SkeletonGrid />
           ) : error && games.length === 0 ? (
             <Empty
