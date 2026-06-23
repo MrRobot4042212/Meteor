@@ -104,12 +104,14 @@ export function Home({
   const maxDay = Math.max(1, ...stats.days.map((d) => d.secs));
   const todayIdx = 6;
 
-  // Fallback when there's no playtime yet: surface favorites / first games so
-  // the home isn't empty on a fresh install.
-  const starters = useMemo(
-    () => (hasData ? [] : games.filter((g) => g.favorite).concat(games).slice(0, 8)),
-    [hasData, games],
-  );
+  // Fallback when there's no playtime yet: surface favorites first, then the
+  // rest. Favorites and non-favorites are disjoint, so ids stay unique.
+  const starters = useMemo(() => {
+    if (hasData) return [];
+    const fav = games.filter((g) => g.favorite);
+    const rest = games.filter((g) => !g.favorite);
+    return [...fav, ...rest].slice(0, 8);
+  }, [hasData, games]);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
