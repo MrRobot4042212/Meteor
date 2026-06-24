@@ -33,11 +33,22 @@ export function Home({
     return m;
   }, [games]);
 
-  // --- Aggregate stats -----------------------------------------------------
+  // Only real games count toward playtime stats; apps are tracked separately and
+  // surface only in "Apps más usadas".
+  const isGame = useMemo(
+    () => (id: string) => {
+      const g = byId.get(id);
+      return !!g && g.source !== 'app';
+    },
+    [byId],
+  );
+
+  // --- Aggregate stats (games only) ----------------------------------------
   const stats = useMemo(() => {
     let totalSecs = 0;
     let gamesPlayed = 0;
-    for (const s of Object.values(playtimes)) {
+    for (const [id, s] of Object.entries(playtimes)) {
+      if (!isGame(id)) continue;
       totalSecs += s.seconds;
       if (s.seconds > 0) gamesPlayed++;
     }
@@ -61,7 +72,8 @@ export function Home({
     const weekEnd = dayEnd(6);
 
     let sessionsWeek = 0;
-    for (const s of Object.values(playtimes)) {
+    for (const [id, s] of Object.entries(playtimes)) {
+      if (!isGame(id)) continue;
       for (const sess of s.history ?? []) {
         const startMs = sess.start * 1000;
         const endMs = sess.end * 1000;
@@ -76,17 +88,17 @@ export function Home({
     }
     const weekSecs = days.reduce((a, d) => a + d.secs, 0);
     return { totalSecs, gamesPlayed, days, weekSecs, sessionsWeek };
-  }, [playtimes]);
+  }, [playtimes, isGame]);
 
-  // --- Recently played (by last_played) ------------------------------------
+  // --- Recently played games (by last_played; apps excluded) ---------------
   const recent = useMemo(() => {
     return Object.entries(playtimes)
-      .filter(([id, s]) => s.last_played && byId.has(id))
+      .filter(([id, s]) => s.last_played && isGame(id))
       .sort((a, b) => (b[1].last_played ?? 0) - (a[1].last_played ?? 0))
       .slice(0, 8)
       .map(([id]) => byId.get(id)!)
       .filter(Boolean);
-  }, [playtimes, byId]);
+  }, [playtimes, byId, isGame]);
 
   // --- Most used, split: games vs apps (by total seconds) ------------------
   const { mostPlayedGames, mostUsedApps } = useMemo(() => {
@@ -147,9 +159,9 @@ export function Home({
         />
         <StatCard
           icon={<GridIcon className="h-4 w-4" />}
-          label="Títulos jugados"
+          label="Juegos jugados"
           value={String(stats.gamesPlayed)}
-          hint="juegos y apps con tiempo"
+          hint="juegos con tiempo"
         />
       </div>
 

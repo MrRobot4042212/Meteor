@@ -1,3 +1,6 @@
+CLAUDE.md
+claude.md
+GEMINI.md
 # dependencies
 /node_modules
 # next.js
@@ -19,5 +22,3 @@ next-env.d.ts
 # not versioned. The sidecar C# source and the ADLX SDK *are* committed.
 /src-tauri/binaries/*.exe
 .env
-CLAUDE.md
-GEMINI.md

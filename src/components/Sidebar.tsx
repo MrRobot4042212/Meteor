@@ -273,6 +273,11 @@ export function Sidebar({
           <GearIcon className="h-[18px] w-[18px]" />
           <span>Ajustes</span>
         </button>
+        <span className="text-xs text-muted border-t border-line pt-2 mt-2 text-center">
+          Hecho por: <a href="https://github.com/MrRobot4042212" className="text-underline hover:text-accent">
+            Dalfon_dev
+          </a>
+        </span>
       </div>
     </aside>
   );
