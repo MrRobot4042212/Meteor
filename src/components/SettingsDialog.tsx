@@ -34,13 +34,13 @@ const OVERLAY_POSITIONS: { value: OverlayPosition; label: string }[] = [
 // Metric toggles shown in the overlay settings. FPS/frametime depend on the
 // PresentMon integration (later phase); flagged so expectations are clear.
 const OVERLAY_METRICS: { key: keyof OverlaySettings; label: string; note?: string }[] = [
-  { key: 'show_fps', label: 'FPS', note: 'PresentMon' },
-  { key: 'show_frametime', label: 'Frametime', note: 'PresentMon' },
+  { key: 'show_fps', label: 'FPS' },
+  { key: 'show_frametime', label: 'Frametime' },
   { key: 'show_gpu', label: 'Uso GPU' },
   { key: 'show_gpu_temp', label: 'Temp. GPU' },
   { key: 'show_vram', label: 'VRAM' },
   { key: 'show_cpu', label: 'Uso CPU' },
-  { key: 'show_cpu_temp', label: 'Temp. CPU', note: 'admin' },
+  { key: 'show_cpu_temp', label: 'Temp. CPU' },
   { key: 'show_ram', label: 'RAM' },
 ];
 

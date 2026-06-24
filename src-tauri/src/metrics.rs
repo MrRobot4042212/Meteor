@@ -127,6 +127,10 @@ pub fn start(app: AppHandle) {
         // Last GPU selection applied to ADLX, so we only re-select when it changes.
         #[cfg(windows)]
         let mut applied_gpu = String::new();
+        // Last foreground window seen, so we only re-assert topmost when it changes
+        // (re-stacking every tick makes the overlay flicker).
+        #[cfg(windows)]
+        let mut last_fg: isize = 0;
 
         loop {
             std::thread::sleep(Duration::from_millis(INTERVAL_MS.load(Ordering::Relaxed)));
@@ -243,19 +247,31 @@ pub fn start(app: AppHandle) {
                 }
             }
 
-            // Show the overlay and push the sample to it. We re-assert topmost every
-            // tick: a game that just took the foreground (especially borderless) lands
-            // above us otherwise. Tauri's set_always_on_top is a no-op once we're
-            // already topmost, so on Windows we toggle the z-order to restack to the
-            // very top of the topmost band (see `force_topmost`).
+            // Show the overlay and push the sample to it. We re-assert topmost only
+            // when the foreground window changes — a game taking the foreground
+            // (especially borderless) lands above us, but re-stacking every tick
+            // makes the HUD flicker (the NOTOPMOST→TOPMOST toggle repaints). The
+            // foreground rarely changes once you're in-game, so this is flicker-free.
             if let Some(w) = app.get_webview_window("overlay") {
                 if !shown {
                     let _ = w.show();
+                    let _ = w.set_always_on_top(true);
                     shown = true;
+                    #[cfg(windows)]
+                    {
+                        force_topmost(&w);
+                        last_fg = 0; // force a re-assert on the next foreground read
+                    }
                 }
-                let _ = w.set_always_on_top(true);
                 #[cfg(windows)]
-                force_topmost(&w);
+                {
+                    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+                    let fg = unsafe { GetForegroundWindow() }.0 as isize;
+                    if fg != last_fg {
+                        force_topmost(&w);
+                        last_fg = fg;
+                    }
+                }
                 let _ = app.emit_to("overlay", "metrics-sample", &sample);
             }
         }
