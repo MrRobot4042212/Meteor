@@ -187,6 +187,32 @@ fn library_index(app: &AppHandle) -> Vec<IndexEntry> {
         .collect()
 }
 
+/// PID of a running process belonging to this entry (for the metrics overlay /
+/// PresentMon). Same matching rules as `entry_running`.
+fn find_pid(sys: &System, install_dir: Option<&str>, exe: Option<&str>) -> Option<u32> {
+    let dir = install_dir.map(|s| s.to_lowercase());
+    let exe = exe.map(|s| s.to_lowercase());
+    for (pid, p) in sys.processes() {
+        let Some(path) = p.exe().map(|e| e.to_string_lossy().to_lowercase()) else {
+            continue;
+        };
+        if let Some(e) = &exe {
+            if &path == e {
+                return Some(pid.as_u32());
+            }
+        }
+        if let Some(d) = &dir {
+            if !d.is_empty() && path.starts_with(d.as_str()) {
+                let name = path.rsplit(['\\', '/']).next().unwrap_or(&path);
+                if !EXCLUDE.iter().any(|x| name.contains(x)) {
+                    return Some(pid.as_u32());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// True if one of the running exe paths belongs to this entry.
 fn entry_running(paths: &[String], install_dir: Option<&str>, exe: Option<&str>) -> bool {
     let dir = install_dir.map(|s| s.to_lowercase());
@@ -279,6 +305,14 @@ pub fn start(app: AppHandle) {
                 })
                 .max_by_key(|(_, s)| *s)
                 .map(|(id, _)| id);
+
+            // Publish the foreground game (name + pid) to the metrics overlay.
+            let entry = primary.as_ref().and_then(|id| index.iter().find(|e| &e.id == id));
+            let game_name = entry.map(|e| e.name.clone());
+            let game_pid = entry
+                .and_then(|e| find_pid(&sys, e.install_dir.as_deref(), e.executable.as_deref()));
+            crate::metrics::set_current_game(game_name, game_pid);
+
             if primary != presence {
                 match &primary {
                     Some(id) => {

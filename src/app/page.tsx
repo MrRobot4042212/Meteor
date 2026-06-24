@@ -37,6 +37,8 @@ import { TopBar, type SortKey } from '@/components/TopBar';
 import { UpdatePrompt } from '@/components/UpdatePrompt';
 import { NotificationsPanel } from '@/components/NotificationsPanel';
 import { Onboarding } from '@/components/Onboarding';
+import { Overlay } from '@/components/Overlay';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { SOURCE_ORDER } from '@/lib/sources';
 import { fuzzyScore } from '@/lib/fuzzy';
 import {
@@ -66,7 +68,27 @@ function folderOf(game: Game): string | null {
   return i > 0 ? exe.slice(0, i) : null;
 }
 
-export default function Page() {
+/**
+ * Root: the same bundle backs two windows. The dedicated `overlay` window renders
+ * only the metrics HUD; the `main` window renders the full launcher. We resolve
+ * the window label on the client (Tauri isn't present at static-export build time).
+ */
+export default function Root() {
+  const [mode, setMode] = useState<'loading' | 'main' | 'overlay'>('loading');
+  useEffect(() => {
+    let label = 'main';
+    try {
+      label = getCurrentWindow().label;
+    } catch {
+      // Not running under Tauri (e.g. plain `next dev`): default to the main app.
+    }
+    setMode(label === 'overlay' ? 'overlay' : 'main');
+  }, []);
+  if (mode === 'loading') return null;
+  return mode === 'overlay' ? <Overlay /> : <MainApp />;
+}
+
+function MainApp() {
   // Onboarding gate: 'unknown' until settings load, then 'needed' (first run) or
   // 'done'. The library only auto-scans once we're past onboarding, so the slow
   // native scan never freezes the onboarding screen — the user kicks it off with

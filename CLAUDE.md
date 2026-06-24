@@ -362,7 +362,8 @@ hacen `stopPropagation`).
 
 Comandos nuevos: `game_details`, `get_playtime`, `all_playtime`,
 `dir_size`, `open_path`, `app_icon`, `cached_library`, `get_discord_client_id`,
-`set_discord_client_id`, `get_autostart`, `set_autostart`.
+`set_discord_client_id`, `get_autostart`, `set_autostart`, `system_info`,
+`is_elevated`, `restart_as_admin`.
 
 **Spotlight global** (`Spotlight.tsx` + plugin `tauri-plugin-global-shortcut`): atajo
 **Ctrl+Shift+Space** registrado en `setup`; su handler trae la ventana `main` al
@@ -442,6 +443,96 @@ se aplica en vivo (`set_client_id` cierra la conexión para reconectar) y se car
 `setup`. Discord muestra "Playing <nombre de esa app>" (de ahí nombrarla «Meteor»).
 `LARGE_IMAGE` (vacío) permite una imagen si se sube un asset al portal de Discord.
 `clear_cover_cache` también borra `details_cache.json`.
+
+## Overlay de métricas in-game (`metrics.rs` + `Overlay.tsx`)
+
+HUD que se pinta **sobre el juego** con telemetría: GPU (uso, temp, VRAM, clock,
+potencia), CPU/RAM y —en una fase posterior— FPS/frametime/latencia. **Sin
+inyección de DLL** (anti-cheat safe) y **optimizado**: el sampler solo trabaja
+cuando el overlay está on **y** hay un juego corriendo; en idle no hace nada.
+
+- **Fuentes**: GPU **NVIDIA** vía `nvml-wrapper` (carga `nvml.dll` en runtime; sin
+  NVIDIA, init falla y se omiten las métricas de GPU, sin romper nada — no requiere
+  admin). GPU **AMD** vía **ADLX** (`amd.rs` + shim C++ `third_party/adlx_shim.cpp`):
+  cuando NVML falla (no hay NVIDIA), el sampler cae a ADLX, que carga `amdadlx64.dll`
+  (lo instala el driver Adrenalin) en runtime y lee uso/temp/VRAM/clock/power **y FPS**
+  de la GPU **discreta** (itera la lista y prefiere `GPUTYPE_DISCRETE`: en APU+dGPU la
+  primera entrada suele ser la integrada). El SDK ADLX (MIT) está vendoreado en
+  `src-tauri/third_party/adlx/SDK/`; `build.rs` compila el shim + helper con el crate
+  `cc` (no hay import lib: ADLX carga el DLL dinámicamente, así que en equipos sin AMD
+  `adlx_init` falla y se omite, igual que NVML). El **FPS de ADLX** es del app en primer
+  plano (lo que usa el propio overlay de Adrenalin): sin targeting de PID ni admin, así
+  que en AMD es más robusto que PresentMon (se prefiere ADLX y PresentMon queda de
+  fallback). CPU/RAM vía `sysinfo`. **FPS/frametime** (= "latencia de presentación")
+  vía **PresentMon** (`presentmon.rs`): ETW, **sin inyección** (anti-cheat safe). Un
+  hilo controlador lanza `PresentMon.exe -process_id <pid> -output_stdout …` apuntando
+  al PID del juego (que publica el watcher de playtime), parsea la columna
+  `*BetweenPresents` del CSV en stdout y mantiene una **ventana móvil de ~1 s** para
+  derivar FPS y frametime medio (atomics leídos por el sampler). Solo corre cuando el
+  overlay está on **y** alguna métrica FPS está activa **y** hay juego
+  (`metrics::want_fps`). **Requiere dos cosas, o degrada a `None`**: (1) el binario
+  `PresentMon.exe` en `src-tauri/binaries/` (no incluido en el repo — ver su
+  `README.md`; para el instalador, añadir a `bundle.resources`), y (2) Meteor **como
+  administrador** (las sesiones ETW lo exigen; no forzamos elevación global a
+  propósito). El resto de métricas funcionan sin admin.
+- **Temperatura de CPU** (`cputemp.rs` + sidecar .NET `sidecar/cputemp/`): la temp real
+  de CPU (Ryzen Tctl/Tdie, núcleos Intel) en Windows solo se lee con **driver de kernel**,
+  así que se delega en **LibreHardwareMonitor** (`LibreHardwareMonitorLib`) empaquetado
+  como ejecutable aparte (`binaries/cputemp.exe`, self-contained). El sidecar emite un
+  entero °C por línea a stdout (~1/s); un hilo controlador (mismo patrón que PresentMon)
+  lo lanza **solo** cuando el overlay quiere temp de CPU **y** hay juego
+  (`metrics::want_cpu_temp() && has_game()`), parsea stdout a un atomic y lo mata (descarga
+  el driver) cuando deja de hacer falta. **Requiere, o degrada a `None`**: (1) el binario
+  (no versionado, ver su `README.md`), (2) Meteor **como administrador** (cargar el driver),
+  y (3) una versión de LHM con **driver compatible con HVCI** (Memory Integrity de Win11
+  bloquea el WinRing0 viejo → lee 0; las `0.9.7-pre*` traen el driver nuevo). Por eso
+  `show_cpu_temp` está **off por defecto** (a diferencia del resto de toggles). NVML/ADLX
+  son GPU-only y PresentMon solo mide frames: **ninguna** API de GPU da temp de CPU.
+- **Elevación (admin) para métricas** (`elevation.rs`): solo **temp de CPU** y **FPS en
+  NVIDIA** la necesitan; GPU/CPU/RAM y FPS-AMD van sin admin. Windows no eleva un proceso
+  en caliente, así que no hay toggle: `is_elevated()` (token del proceso) reporta el estado y
+  `restart_as_admin()` relanza el exe con el verbo `runas` (UAC) y cierra la instancia actual
+  tras 400 ms. UI: aviso + botón "Reiniciar como administrador" en la pestaña **Métricas** de
+  `SettingsDialog` cuando `is_elevated()` es false (resaltado si `show_cpu_temp` está on). El
+  **onboarding** (`Onboarding.tsx`, último slide) tiene un toggle "Overlay de métricas in-game"
+  que persiste `overlay.enabled` junto a autostart/bandeja.
+- **Ventana overlay**: segunda ventana Tauri `overlay` creada en `setup`, a pantalla
+  completa del monitor primario, **transparente, sin bordes, topmost, skip-taskbar,
+  no-focusable y click-through** (`set_ignore_cursor_events(true)`). Funciona en juegos
+  **borderless/ventana**; en **fullscreen exclusivo** Windows no la compone (limitación
+  conocida). Carga el **mismo bundle**: `page.tsx` (`Root`) ramifica por
+  `getCurrentWindow().label` → la ventana `overlay` monta solo `<Overlay/>` (no
+  `useLibrary` ni el resto), la `main` la app completa. `Overlay.tsx` fuerza el
+  documento transparente (globals pinta un fondo opaco) y pinta el HUD en la esquina
+  elegida.
+- **Estado compartido** (`metrics.rs`, estáticos): `OVERLAY_ENABLED`, `INTERVAL_MS`,
+  `CURRENT_GAME` (nombre) y `CURRENT_PID` (para PresentMon). El **watcher de playtime**
+  publica cada poll el juego en primer plano (su `primary` ya calculado) + el PID
+  (`find_pid`, mismas reglas de match que `entry_running`) vía
+  `metrics::set_current_game`. El sampler (hilo propio, intervalo configurable, default
+  1 s) lee ese estado, muestrea y emite **`metrics-sample`** a la ventana `overlay`;
+  muestra/oculta la ventana según haya juego.
+- **Ajustes**: `OverlaySettings` dentro de `AppSettings` (`#[serde(default)]`, así los
+  settings viejos siguen cargando): `enabled`, `position` (4 esquinas), `interval_ms`,
+  toggles por métrica y **`gpu`** (selector: `"auto" | "nvml:<i>" | "adlx:<i>"`). UI en
+  `SettingsDialog` (switch maestro + esquinas + selector de GPU + rejilla de métricas),
+  persistida con `set_app_settings`, que **aplica en vivo** (`apply_overlay_settings`:
+  reconfigura el sampler vía `metrics::configure` + `metrics::set_gpu`, oculta la ventana
+  si se desactiva y emite `overlay-config` para que el HUD relea su config). **Hotkey
+  global `Ctrl+Shift+O`** alterna el overlay (`toggle_overlay`, persiste). El handler de
+  shortcuts distingue este de `Shift+Space` (Spotlight).
+- **Selector de GPU + panel "Mi equipo"**: el sampler inicializa **NVML y ADLX a la vez**
+  (no solo el fallback), así un equipo con NVIDIA+AMD puede elegir cualquiera. Cada tick
+  lee `metrics::set_gpu`: `"adlx:<i>"` → muestrea esa GPU AMD (`amd::select`, re-seleccionada
+  solo al cambiar); `"nvml:<i>"` → ese device NVIDIA; `"auto"` → NVML[0] si hay NVIDIA, si
+  no la AMD discreta. El comando **`system_info`** (`system.rs`) reúne CPU/RAM/SO (sysinfo),
+  discos (sysinfo), placa base (registro BIOS, sin WMI), pantallas (Win32 GDI
+  `EnumDisplayDevices`/`EnumDisplaySettings`) y la **lista de GPUs** (NVML ∪ ADLX, cada una
+  con su `key` de selección; el modelo `GpuInfo` admite `key` vacío para GPUs sin backend,
+  pero hoy solo se enumeran las de NVML/ADLX, así que una iGPU Intel no aparece —ampliable
+  con DXGI/WMI si hace falta).
+  El shim ADLX expone `adlx_gpu_count`/`adlx_gpu_info`/`adlx_select` para enumerar y cambiar
+  de GPU. UI: sección "Mi equipo" en `SettingsDialog` con toda la info + el `<select>` de GPU.
 
 ## Limitaciones a tener presentes
 

@@ -1,6 +1,11 @@
+#[cfg(windows)]
+mod amd;
 mod appicons;
 mod apps_db;
 mod art;
+mod cputemp;
+#[cfg(windows)]
+mod elevation;
 mod discord;
 mod battlenet;
 mod ea;
@@ -9,11 +14,14 @@ mod files;
 mod gog;
 mod igdb;
 mod launcher;
+mod metrics;
 mod models;
 mod playtime;
+mod presentmon;
 mod screenshots;
 mod steam;
 mod storage;
+mod system;
 mod translate;
 mod ubisoft;
 mod windows_apps;
@@ -384,14 +392,86 @@ fn get_app_settings(state: tauri::State<'_, std::sync::Mutex<AppSettings>>) -> R
 }
 
 #[tauri::command]
+fn system_info() -> Result<system::SystemInfo, String> {
+    Ok(system::collect())
+}
+
+/// Whether Meteor is running elevated (admin). Admin is required for CPU temp and
+/// for FPS on NVIDIA (PresentMon). False on non-Windows.
+#[tauri::command]
+fn is_elevated() -> bool {
+    #[cfg(windows)]
+    {
+        elevation::is_elevated()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Relaunch Meteor as administrator (UAC prompt), then exit this instance.
+#[tauri::command]
+fn restart_as_admin(app: AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        elevation::relaunch_elevated()?;
+        // Let the command response flush, then quit so only the elevated copy runs.
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            handle.exit(0);
+        });
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("Solo disponible en Windows.".into())
+    }
+}
+
+#[tauri::command]
 fn set_app_settings(
     app: AppHandle,
     state: tauri::State<'_, std::sync::Mutex<AppSettings>>,
     settings: AppSettings,
 ) -> Result<(), String> {
     storage::save_settings(&app, &settings);
+    apply_overlay_settings(&app, &settings);
     *state.lock().unwrap() = settings;
     Ok(())
+}
+
+/// Apply the overlay config live: update the sampler and, when disabling, hide the
+/// overlay window immediately and tell it to refresh its config.
+fn apply_overlay_settings(app: &AppHandle, settings: &AppSettings) {
+    let fps_wanted = settings.overlay.show_fps || settings.overlay.show_frametime;
+    metrics::configure(
+        settings.overlay.enabled,
+        settings.overlay.interval_ms,
+        fps_wanted,
+        settings.overlay.show_cpu_temp,
+    );
+    metrics::set_gpu(settings.overlay.gpu.clone());
+    if !settings.overlay.enabled {
+        if let Some(w) = app.get_webview_window("overlay") {
+            let _ = w.hide();
+        }
+    }
+    // The overlay window re-reads settings (position, which metrics) on this event.
+    let _ = app.emit_to("overlay", "overlay-config", ());
+}
+
+/// Toggle the overlay on/off (the global hotkey). Persists and applies live.
+fn toggle_overlay(app: &AppHandle) {
+    if let Some(state) = app.try_state::<std::sync::Mutex<AppSettings>>() {
+        let mut s = state.lock().unwrap().clone();
+        s.overlay.enabled = !s.overlay.enabled;
+        storage::save_settings(app, &s);
+        apply_overlay_settings(app, &s);
+        *state.lock().unwrap() = s;
+    }
 }
 /// The saved Discord Rich Presence client id (empty = disabled).
 #[tauri::command]
@@ -464,8 +544,17 @@ pub fn run() {
             // Global Spotlight hotkey: bring Meteor up and open the launcher palette
             // from anywhere. The handler runs for our one registered shortcut.
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    // Ctrl+Shift+O toggles the metrics overlay; Shift+Space opens Spotlight.
+                    if *shortcut
+                        == Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO)
+                    {
+                        toggle_overlay(app);
+                    } else {
                         show_main(app);
                         let _ = app.emit("open-spotlight", ());
                     }
@@ -477,17 +566,67 @@ pub fn run() {
             
             let handle = app.handle().clone();
             let settings = storage::load_settings(&handle);
+            // Apply the saved overlay config to the sampler before it starts.
+            metrics::configure(
+                settings.overlay.enabled,
+                settings.overlay.interval_ms,
+                settings.overlay.show_fps || settings.overlay.show_frametime,
+                settings.overlay.show_cpu_temp,
+            );
+            metrics::set_gpu(settings.overlay.gpu.clone());
             app.manage(std::sync::Mutex::new(settings));
-            
+
+            // Full-screen transparent, click-through, always-on-top overlay window
+            // for in-game metrics. Created hidden; the metrics sampler shows it only
+            // while a game is running and the overlay is enabled. It loads the same
+            // bundle and renders the HUD based on its window label.
+            {
+                use tauri::{WebviewUrl, WebviewWindowBuilder};
+                if let Ok(overlay) = WebviewWindowBuilder::new(
+                    app,
+                    "overlay",
+                    WebviewUrl::App("index.html".into()),
+                )
+                .title("Meteor Overlay")
+                .decorations(false)
+                .transparent(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .shadow(false)
+                .focused(false)
+                .visible(false)
+                .build()
+                {
+                    // Cover the primary monitor and let clicks pass through to the game.
+                    if let Ok(Some(mon)) = overlay.primary_monitor() {
+                        let size = mon.size();
+                        let _ = overlay.set_size(tauri::PhysicalSize::new(size.width, size.height));
+                        let _ = overlay.set_position(tauri::PhysicalPosition::new(0, 0));
+                    }
+                    let _ = overlay.set_ignore_cursor_events(true);
+                }
+            }
+
             // Close any play sessions left dangling by a previous crash/force-quit,
             // then start the global watcher that times games however they launch.
             playtime::reconcile(&handle);
             // Load the saved Discord client id so the watcher can set Rich Presence.
             discord::set_client_id(&storage::load_discord_client_id(&handle));
+            // Start the metrics sampler (idle until the overlay is on and a game runs),
+            // the PresentMon controller (idle until FPS is wanted + a game runs) and the
+            // CPU-temp sidecar controller (idle until CPU temp is wanted + a game runs).
+            metrics::start(handle.clone());
+            presentmon::start(handle.clone());
+            cputemp::start(handle.clone());
             playtime::start(handle);
-            // Register the global Spotlight shortcut (Ctrl+Shift+Space).
+            // Register the global shortcuts: Spotlight (Shift+Space) and the metrics
+            // overlay toggle (Ctrl+Shift+O).
             let spotlight = Shortcut::new(Some(Modifiers::SHIFT), Code::Space);
             let _ = app.global_shortcut().register(spotlight);
+            let overlay_toggle =
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
+            let _ = app.global_shortcut().register(overlay_toggle);
 
             // System tray: Meteor lives in the tray so the watchers keep running
             // after the window is closed. Left-click or "Mostrar Meteor" reopens
@@ -557,6 +696,9 @@ pub fn run() {
             set_autostart,
             get_app_settings,
             set_app_settings,
+            system_info,
+            is_elevated,
+            restart_as_admin,
             open_path,
             user_screenshots,
             launch_game

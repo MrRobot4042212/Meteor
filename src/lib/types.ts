@@ -86,8 +86,84 @@ export interface Game {
   icon?: string;
 }
 
+export type OverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
+/** In-game metrics overlay configuration (part of AppSettings). */
+export interface OverlaySettings {
+  enabled: boolean;
+  position: OverlayPosition;
+  interval_ms: number;
+  show_fps: boolean;
+  show_frametime: boolean;
+  show_gpu: boolean;
+  show_gpu_temp: boolean;
+  show_vram: boolean;
+  show_cpu: boolean;
+  show_cpu_temp: boolean;
+  show_ram: boolean;
+  /** Which GPU to sample: "auto" | "nvml:<i>" | "adlx:<i>". */
+  gpu: string;
+}
+
 export interface AppSettings {
   setup_completed: boolean;
   minimize_to_tray: boolean;
+  overlay: OverlaySettings;
+}
+
+/** A GPU as reported by `system_info`. `key` is set only for metric-capable GPUs. */
+export interface GpuInfo {
+  name: string;
+  vendor: string;
+  vram_mb: number;
+  kind: string;
+  key: string;
+}
+
+export interface DiskInfo {
+  name: string;
+  fs: string;
+  total_mb: number;
+  available_mb: number;
+}
+
+export interface DisplayInfo {
+  name: string;
+  width: number;
+  height: number;
+  refresh_hz: number;
+  primary: boolean;
+}
+
+/** Hardware/system info for the "Mi equipo" panel. */
+export interface SystemInfo {
+  cpu: string;
+  cpu_cores: number;
+  cpu_threads: number;
+  ram_total_mb: number;
+  os: string;
+  motherboard: string | null;
+  gpus: GpuInfo[];
+  disks: DiskInfo[];
+  displays: DisplayInfo[];
+}
+
+/** One telemetry sample pushed to the overlay window via the `metrics-sample` event. */
+export interface MetricsSample {
+  game?: string | null;
+  cpu_usage: number;
+  ram_used_mb: number;
+  ram_total_mb: number;
+  gpu_usage?: number | null;
+  gpu_temp_c?: number | null;
+  vram_used_mb?: number | null;
+  vram_total_mb?: number | null;
+  gpu_clock_mhz?: number | null;
+  gpu_power_w?: number | null;
+  /** CPU temperature from the LibreHardwareMonitor sidecar (admin + driver). */
+  cpu_temp_c?: number | null;
+  /** FPS / frametime arrive from the PresentMon integration (later phase). */
+  fps?: number | null;
+  frametime_ms?: number | null;
 }
 

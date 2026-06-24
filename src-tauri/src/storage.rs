@@ -281,14 +281,22 @@ pub fn set_type_override(app: &AppHandle, id: &str, kind: Option<&str>) -> Resul
 
 pub fn load_settings(app: &AppHandle) -> AppSettings {
     let Ok(path) = data_file(app, SETTINGS_FILE) else {
-        return AppSettings { setup_completed: false, minimize_to_tray: true };
+        return AppSettings {
+            setup_completed: false,
+            minimize_to_tray: true,
+            overlay: Default::default(),
+        };
     };
     if let Ok(data) = fs::read_to_string(path) {
         if let Ok(settings) = serde_json::from_str(&data) {
             return settings;
         }
     }
-    AppSettings { setup_completed: false, minimize_to_tray: true }
+    AppSettings {
+        setup_completed: false,
+        minimize_to_tray: true,
+        overlay: Default::default(),
+    }
 }
 
 pub fn save_settings(app: &AppHandle, settings: &AppSettings) {

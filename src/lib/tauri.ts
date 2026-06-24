@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Game, Category, GameDetails, PlayStat, AppSettings } from './types';
+import type { Game, Category, GameDetails, PlayStat, AppSettings, SystemInfo } from './types';
 
 /** Unified library across every source (Steam, Epic, GOG, EA, Ubisoft, Xbox, manual). */
 export const getLibrary = () => invoke<Game[]>('get_library');
@@ -127,3 +127,12 @@ export const getAppSettings = () => invoke<AppSettings>('get_app_settings');
 /** Set application settings. */
 export const setAppSettings = (settings: AppSettings) =>
   invoke<void>('set_app_settings', { settings });
+
+/** Hardware/system info for the "Mi equipo" settings panel. */
+export const systemInfo = () => invoke<SystemInfo>('system_info');
+
+/** Whether Meteor runs elevated (admin) — needed for CPU temp / NVIDIA FPS. */
+export const isElevated = () => invoke<boolean>('is_elevated');
+
+/** Relaunch Meteor as administrator (UAC), then the current instance exits. */
+export const restartAsAdmin = () => invoke<void>('restart_as_admin');

@@ -33,12 +33,14 @@ export function Onboarding({
   
   const [auto, setAuto] = useState<boolean>(true);
   const [tray, setTray] = useState<boolean>(true);
+  const [metrics, setMetrics] = useState<boolean>(false);
 
   useEffect(() => {
     Promise.all([getAutostart(), getAppSettings()])
       .then(([autostartRes, settingsRes]) => {
         setAuto(autostartRes);
         setTray(settingsRes.minimize_to_tray);
+        setMetrics(settingsRes.overlay.enabled);
       })
       .catch((e) => console.error(e));
   }, []);
@@ -61,6 +63,7 @@ export function Onboarding({
         ...current,
         setup_completed: true,
         minimize_to_tray: tray,
+        overlay: { ...current.overlay, enabled: metrics },
       });
       onComplete();
     } catch (e) {
@@ -148,6 +151,35 @@ export function Onboarding({
               className="hidden" 
               checked={tray} 
               onChange={(e) => setTray(e.target.checked)} 
+            />
+          </label>
+
+          <label className="flex items-center justify-between cursor-pointer rounded-xl border border-line bg-surface p-5 transition hover:border-accent/40">
+            <div>
+              <p className="text-sm font-semibold text-ink mb-1">Overlay de métricas in-game</p>
+              <p className="text-xs text-muted pr-8">
+                Muestra FPS, GPU/CPU, temperaturas y memoria sobre el juego. Puedes ajustarlo
+                luego en Ajustes (Ctrl+Shift+O). La temperatura de CPU requiere admin.
+              </p>
+            </div>
+            <div
+              role="switch"
+              aria-checked={metrics}
+              className={`relative h-6 w-11 shrink-0 border transition-colors ${
+                metrics ? 'border-accent bg-accent' : 'border-line bg-elevated'
+              }`}
+            >
+              <span
+                className={`absolute top-1/2 h-4 w-4 -translate-y-1/2 transition-all ${
+                  metrics ? 'left-6 bg-white' : 'left-1 bg-muted'
+                }`}
+              />
+            </div>
+            <input
+              type="checkbox"
+              className="hidden"
+              checked={metrics}
+              onChange={(e) => setMetrics(e.target.checked)}
             />
           </label>
 

@@ -31,6 +31,30 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      # --- Metrics binaries bundled as resources (see tauri.conf.json) ---------
+      # The ADLX shim (AMD GPU) compiles from vendored sources via build.rs, so it
+      # needs no step here. PresentMon (NVIDIA FPS) and the cputemp sidecar (CPU
+      # temp) are produced into src-tauri/binaries/ before the bundle is built.
+
+      - name: Setup .NET (cputemp sidecar)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build CPU temp sidecar
+        run: >
+          dotnet publish src-tauri/sidecar/cputemp/cputemp.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:DebugType=none -o src-tauri/binaries
+
+      - name: Download PresentMon
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://github.com/GameTechDev/PresentMon/releases/download/v2.4.1/PresentMon-2.4.1-x64.exe" `
+            -OutFile "src-tauri/binaries/PresentMon.exe"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

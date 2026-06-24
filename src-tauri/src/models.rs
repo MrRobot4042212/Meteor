@@ -85,9 +85,83 @@ pub struct AppSettings {
     /// Whether the app hides to the system tray when the main window is closed.
     #[serde(default = "default_minimize_to_tray")]
     pub minimize_to_tray: bool,
+    /// In-game metrics overlay configuration.
+    #[serde(default)]
+    pub overlay: OverlaySettings,
 }
 
 fn default_minimize_to_tray() -> bool {
+    true
+}
+
+/// Configuration for the in-game performance/telemetry overlay. Persisted as part
+/// of `AppSettings`; applied live by `metrics.rs` and read by the overlay window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlaySettings {
+    /// Master switch. When off, the sampler idles and the overlay window stays hidden.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Corner of the screen: "top-left" | "top-right" | "bottom-left" | "bottom-right".
+    #[serde(default = "default_overlay_position")]
+    pub position: String,
+    /// Sampling/emit interval in milliseconds.
+    #[serde(default = "default_overlay_interval")]
+    pub interval_ms: u64,
+    #[serde(default = "yes")]
+    pub show_fps: bool,
+    #[serde(default = "yes")]
+    pub show_frametime: bool,
+    #[serde(default = "yes")]
+    pub show_gpu: bool,
+    #[serde(default = "yes")]
+    pub show_gpu_temp: bool,
+    /// CPU temperature (needs the LHM sidecar + admin). Off by default since it
+    /// requires elevation; users opt in.
+    #[serde(default)]
+    pub show_cpu_temp: bool,
+    #[serde(default = "yes")]
+    pub show_vram: bool,
+    #[serde(default = "yes")]
+    pub show_cpu: bool,
+    #[serde(default = "yes")]
+    pub show_ram: bool,
+    /// Which GPU to sample: "auto" | "nvml:<i>" | "adlx:<i>".
+    #[serde(default = "default_overlay_gpu")]
+    pub gpu: String,
+}
+
+impl Default for OverlaySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            position: default_overlay_position(),
+            interval_ms: default_overlay_interval(),
+            show_fps: true,
+            show_frametime: true,
+            show_gpu: true,
+            show_gpu_temp: true,
+            show_cpu_temp: false,
+            show_vram: true,
+            show_cpu: true,
+            show_ram: true,
+            gpu: default_overlay_gpu(),
+        }
+    }
+}
+
+fn default_overlay_position() -> String {
+    "top-left".to_string()
+}
+
+fn default_overlay_gpu() -> String {
+    "auto".to_string()
+}
+
+fn default_overlay_interval() -> u64 {
+    1000
+}
+
+fn yes() -> bool {
     true
 }
 
