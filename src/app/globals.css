@@ -127,6 +127,20 @@ body {
   animation: card-in 380ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
+/* Plain fade-in (no fill) — used for the splash entrance. No `forwards` fill so it
+   doesn't override a later opacity transition (the splash fades out on exit). */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out;
+}
+
 /* Animated glow border ("beam"): a conic-gradient ring that rotates around the
    card on hover. Masked to a 2px frame so only the border is painted. The angle
    is a registered custom property so it can be smoothly animated. */

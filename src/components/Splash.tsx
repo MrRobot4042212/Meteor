@@ -19,9 +19,12 @@ const METEORS = [
 export function Splash({
   progress,
   onSkip,
+  exiting = false,
 }: {
   progress: { done: number; total: number };
   onSkip: () => void;
+  /** When true, fade out (the parent keeps us mounted until the fade finishes). */
+  exiting?: boolean;
 }) {
   const [showSkip, setShowSkip] = useState(false);
 
@@ -37,7 +40,11 @@ export function Splash({
     : `Cargando carátulas · ${progress.done}/${progress.total}`;
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-8 bg-background no-select">
+    <div
+      className={`fixed inset-0 z-[100] flex flex-col items-center justify-center gap-8 bg-background no-select animate-fade-in transition-opacity duration-500 ${
+        exiting ? 'opacity-0' : 'opacity-100'
+      }`}
+    >
       {/* Animated mark: a shower of falling meteorites */}
       <div className="relative h-28 w-56 overflow-hidden">
         {METEORS.map((m, i) => (

@@ -67,6 +67,16 @@ function folderOf(game: Game): string | null {
 }
 
 export default function Page() {
+  // Onboarding gate: 'unknown' until settings load, then 'needed' (first run) or
+  // 'done'. The library only auto-scans once we're past onboarding, so the slow
+  // native scan never freezes the onboarding screen — the user kicks it off with
+  // the "Escanear" button, which then shows the splash.
+  const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>(
+    'unknown',
+  );
+  const needsOnboarding = onboardingState === 'needed';
+  const autoScan = onboardingState === 'done';
+
   const {
     games,
     loading,
@@ -78,8 +88,12 @@ export default function Page() {
     booting,
     coverProgress,
     playtimes,
-  } = useLibrary();
+  } = useLibrary(autoScan);
   const [splashDone, setSplashDone] = useState(false);
+  // Splash visibility with a fade-out: kept mounted briefly after it should hide so
+  // it can fade into the main screen instead of popping away.
+  const [splashMounted, setSplashMounted] = useState(false);
+  const [splashExiting, setSplashExiting] = useState(false);
   const [filter, setFilter] = useState<Filter>('home');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<SortKey>('name');
@@ -105,13 +119,29 @@ export default function Page() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
-  const [needsOnboarding, setNeedsOnboarding] = useState(false);
 
   useEffect(() => {
     getAppSettings()
-      .then((s) => setNeedsOnboarding(!s.setup_completed))
-      .catch(() => { });
+      // Fail open: if settings can't load, don't trap the user in onboarding —
+      // treat it as done so the library still scans.
+      .then((s) => setOnboardingState(s.setup_completed ? 'done' : 'needed'))
+      .catch(() => setOnboardingState('done'));
   }, []);
+
+  // Drive the splash mount + fade-out. Mount while the first scan is running; when
+  // it finishes (or the user skips), fade out for 500ms, then unmount — revealing
+  // the main screen underneath.
+  const splashActive = booting && !needsOnboarding && !splashDone;
+  useEffect(() => {
+    if (splashActive) {
+      setSplashMounted(true);
+      setSplashExiting(false);
+    } else if (splashMounted) {
+      setSplashExiting(true);
+      const t = window.setTimeout(() => setSplashMounted(false), 500);
+      return () => window.clearTimeout(t);
+    }
+  }, [splashActive, splashMounted]);
 
   // The game whose detail page is open (kept fresh from `games` by id).
   const selected = selectedId ? games.find((g) => g.id === selectedId) ?? null : null;
@@ -517,15 +547,15 @@ export default function Page() {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-void text-ink">
       {needsOnboarding && (
-        <Onboarding
-          onComplete={() => setNeedsOnboarding(false)}
-          gamesCount={games.length}
-          isScanning={loading || booting}
-        />
+        <Onboarding onComplete={() => setOnboardingState('done')} />
       )}
 
-      {booting && !splashDone && !needsOnboarding && (
-        <Splash progress={coverProgress} onSkip={() => setSplashDone(true)} />
+      {splashMounted && (
+        <Splash
+          progress={coverProgress}
+          exiting={splashExiting}
+          onSkip={() => setSplashDone(true)}
+        />
       )}
 
       <div className="flex min-h-0 flex-1">

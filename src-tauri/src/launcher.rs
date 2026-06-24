@@ -55,9 +55,15 @@ fn open_uri(uri: &str) -> Result<(), String> {
             return Ok(());
         }
         // `start` needs an (empty) title argument before the URL.
-        Command::new("cmd")
-            .args(["/C", "start", "", uri])
-            .spawn()
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "start", "", uri]);
+        // Don't flash a console window for the brief `cmd` invocation.
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.spawn()
             .map_err(|e| format!("No se pudo abrir «{uri}»: {e}"))?;
     }
     #[cfg(not(target_os = "windows"))]

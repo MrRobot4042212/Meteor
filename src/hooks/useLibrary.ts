@@ -15,7 +15,11 @@ import {
 /** Resolve covers a few at a time to stay under IGDB's ~4 req/s rate limit. */
 const COVER_CONCURRENCY = 3;
 
-export function useLibrary() {
+// `autoScan` gates the very first library scan. Returning users pass `true` so it
+// runs in the background on open; first-run users pass `false` until they finish
+// onboarding and hit "Escanear" — that way the slow native scan never freezes the
+// onboarding screen, and its splash is a deliberate, user-triggered step.
+export function useLibrary(autoScan: boolean) {
   const [games, setGames] = useState<Game[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,11 +27,16 @@ export function useLibrary() {
   const [categoryMeta, setCategoryMeta] = useState<Category[]>([]);
   // Play stats per game id, for sorting by played/recent (live-updated).
   const [playtimes, setPlaytimes] = useState<Record<string, PlayStat>>({});
-  // First-run splash: true until the library loads and the initial cover pass
-  // finishes. `coverProgress` drives the splash's progress bar.
-  const [booting, setBooting] = useState(true);
+  // First-run splash: turned on by the first splash-worthy `refresh` and off when
+  // its cover pass finishes. `coverProgress` drives the splash's progress bar.
+  const [booting, setBooting] = useState(false);
   const [coverProgress, setCoverProgress] = useState({ done: 0, total: 0 });
+  // Flips true once we've checked the on-disk cache, so the deferred scan always
+  // starts *after* the instant cache paint (which sets `booted` → no splash flash).
+  const [cacheChecked, setCacheChecked] = useState(false);
   const booted = useRef(false);
+  // Ensures the initial scan fires at most once.
+  const started = useRef(false);
   // Bumped on each refresh so a stale in-flight cover pass can bail out.
   const runId = useRef(0);
 
@@ -157,27 +166,35 @@ export function useLibrary() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      // Paint the last cached library instantly (no splash), then refresh in the
-      // background. If there's no cache, fall through to the splash-on-first-run.
+      // Paint the last cached library instantly (no splash). The actual scan is
+      // deferred to the effect below so it can wait on `autoScan`.
       try {
         const cache = await cachedLibrary();
         if (!cancelled && cache.length) {
           setGames(cache);
           setLoading(false);
           booted.current = true;
-          setBooting(false);
         }
       } catch {
-        // No cache: refresh() below will show the first-run splash.
+        // No cache: the deferred scan will show the first-run splash.
       }
-      if (!cancelled) refresh();
+      if (!cancelled) setCacheChecked(true);
     })();
     refreshCategories();
     refreshPlaytimes();
     return () => {
       cancelled = true;
     };
-  }, [refresh, refreshCategories, refreshPlaytimes]);
+  }, [refreshCategories, refreshPlaytimes]);
+
+  // Fire the initial scan once the cache is painted and scanning is allowed
+  // (immediately for returning users, after onboarding for first-run users).
+  useEffect(() => {
+    if (cacheChecked && autoScan && !started.current) {
+      started.current = true;
+      refresh();
+    }
+  }, [cacheChecked, autoScan, refresh]);
 
   return {
     games,

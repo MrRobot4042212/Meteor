@@ -24,12 +24,8 @@ const SLIDES = [
 
 export function Onboarding({
   onComplete,
-  gamesCount,
-  isScanning,
 }: {
   onComplete: () => void;
-  gamesCount?: number;
-  isScanning?: boolean;
 }) {
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -155,23 +151,12 @@ export function Onboarding({
             />
           </label>
 
-          <div className="rounded-xl border border-line bg-surface p-5 flex items-center justify-between">
-            <div>
-              <p className="text-sm font-semibold text-ink mb-1">Escaneo Automático</p>
-              <p className="text-xs text-muted">
-                {isScanning 
-                  ? 'Buscando aplicaciones y juegos en tu equipo...' 
-                  : '¡Búsqueda completada con éxito!'}
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              {isScanning && (
-                <div className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-              )}
-              <span className={`text-lg font-display font-bold ${gamesCount ? 'text-accent' : 'text-muted'}`}>
-                {gamesCount ?? 0}
-              </span>
-            </div>
+          <div className="rounded-xl border border-line bg-surface p-5">
+            <p className="text-sm font-semibold text-ink mb-1">Escaneo de tu biblioteca</p>
+            <p className="text-xs text-muted">
+              Al pulsar «Escanear», Meteor analizará tu equipo en busca de juegos y
+              aplicaciones y descargará sus carátulas. Puede tardar unos segundos.
+            </p>
           </div>
         </div>
 
@@ -191,10 +176,10 @@ export function Onboarding({
         {/* Action Button */}
         <button
           onClick={handleNext}
-          disabled={busy || (isLast && isScanning)}
+          disabled={busy}
           className="w-full rounded-xl bg-accent py-4 text-base font-semibold text-white transition hover:bg-accent-soft shadow-[0_0_20px_rgba(223,79,79,0.2)] disabled:opacity-50"
         >
-          {busy ? 'Guardando...' : isLast ? (isScanning ? 'Escaneando...' : 'Comenzar a usar Meteor') : 'Siguiente'}
+          {busy ? 'Preparando…' : isLast ? 'Escanear mi biblioteca' : 'Siguiente'}
         </button>
       </div>
     </div>

@@ -45,9 +45,16 @@ $out = foreach ($p in Get-AppxPackage) {
 ConvertTo-Json -Compress -InputObject @($out)
 "#;
 
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-        .output();
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT]);
+    // Don't flash a console window when spawning PowerShell from the GUI.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output();
     let Ok(output) = output else {
         return Vec::new();
     };
