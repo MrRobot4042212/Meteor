@@ -283,7 +283,9 @@ const APP_NAMES: &[&str] = &[
     // Misc desktop apps that commonly leak as "games"
     "youtube", "youtube music desktop", "spotify desktop",
     "figma", "canva", "miro",
-    "termius", "tabby terminal",
+    "termius", "tabby terminal", "wallpaper engine", "whatsapp desktop", "wago app",
+    " PawnIO","MuseHub","Archon App","Battlestate Games Launcher", "Jagex Launcher",
+    "Nexus Mod Manager", "Vortex", "The Nexus Launcher", " Epic Games Launcher","Blender"
 ];
 
 /// True if the registry entry looks like a regular application rather than a

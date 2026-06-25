@@ -468,6 +468,7 @@ fn set_app_settings(
     *state.lock().unwrap() = settings.clone();
     apply_overlay_settings(&app, &settings);
     register_shortcuts(&app, &settings.shortcuts);
+    let _ = app.emit("settings-updated", ());
     Ok(())
 }
 

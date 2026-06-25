@@ -139,6 +139,40 @@ export function useLibrary(autoScan: boolean) {
     [resolveCovers, resolveIcons],
   );
 
+  const silentRefresh = useCallback(async () => {
+    const myRun = ++runId.current;
+    try {
+      const list = await getLibrary();
+      if (runId.current !== myRun) return;
+
+      setGames((prev) => {
+        // Only update if there is an actual difference in the game IDs
+        const prevIds = prev.map((g) => g.id).sort().join(',');
+        const newIds = list.map((g) => g.id).sort().join(',');
+        if (prevIds === newIds) return prev;
+
+        // Preserve existing covers/icons to prevent blinking
+        const mergedList = list.map((newGame) => {
+          const oldGame = prev.find((g) => g.id === newGame.id);
+          if (oldGame) {
+            return { ...newGame, cover_url: oldGame.cover_url, icon: oldGame.icon };
+          }
+          return newGame;
+        });
+
+        // Resolve art for any brand new games in the background
+        setTimeout(() => {
+          resolveIcons(mergedList, myRun);
+          resolveCovers(mergedList, myRun);
+        }, 0);
+
+        return mergedList;
+      });
+    } catch {
+      // Fail silently in background
+    }
+  }, [resolveCovers, resolveIcons]);
+
   const refreshCategories = useCallback(async () => {
     try {
       setCategoryMeta(await listCategories());
@@ -196,12 +230,22 @@ export function useLibrary(autoScan: boolean) {
     }
   }, [cacheChecked, autoScan, refresh]);
 
+  // Background silent refresh every 15 minutes to detect uninstalls/installs
+  useEffect(() => {
+    if (!autoScan) return;
+    const interval = setInterval(() => {
+      silentRefresh();
+    }, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [autoScan, silentRefresh]);
+
   return {
     games,
     loading,
     error,
     playtimes,
     refresh,
+    silentRefresh,
     setGames,
     categoryMeta,
     refreshCategories,

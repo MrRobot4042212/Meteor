@@ -277,8 +277,24 @@ pub fn start(app: AppHandle) {
                 .collect();
 
             let ts = now();
+
+            // Mantenemos en la lista de "lanzados" a los juegos que sigan en progreso
+            // o que hayan sido lanzados hace menos de 2 minutos (por si tardan en abrir).
+            let mut launched_list = LAUNCHED_FROM_METEOR.lock().unwrap();
+            launched_list.retain(|(id, launch_ts)| {
+                active.contains_key(id) || ts.saturating_sub(*launch_ts) < 120
+            });
+
             let mut running: HashSet<String> = HashSet::new();
             for e in &index {
+                // OPT-IN: Only check processes for games that are active or were launched via Meteor.
+                let is_active = active.contains_key(&e.id);
+                let was_launched = launched_list.iter().any(|(l_id, _)| l_id == &e.id);
+                
+                if !is_active && !was_launched {
+                    continue;
+                }
+
                 if entry_running(&paths, e.install_dir.as_deref(), e.executable.as_deref()) {
                     running.insert(e.id.clone());
                     active
@@ -316,13 +332,6 @@ pub fn start(app: AppHandle) {
                 })
                 .max_by_key(|(_, s)| *s)
                 .map(|(id, _)| id);
-
-            // Mantenemos en la lista de "lanzados" a los juegos que sigan en progreso
-            // o que hayan sido lanzados hace menos de 2 minutos (por si tardan en abrir).
-            let mut launched_list = LAUNCHED_FROM_METEOR.lock().unwrap();
-            launched_list.retain(|(id, launch_ts)| {
-                active.contains_key(id) || ts.saturating_sub(*launch_ts) < 120
-            });
 
             // Publish the foreground game (name + pid) to the metrics overlay
             // ONLY if it was launched from Meteor.

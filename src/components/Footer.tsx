@@ -1,5 +1,9 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { getAppSettings } from '@/lib/tauri';
+
 /** A small key/badge chip. */
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
@@ -24,9 +28,35 @@ function Shortcut({ keys, label }: { keys: React.ReactNode[]; label: string }) {
 
 /** Footer toolbar listing the app's keyboard/interaction shortcuts. */
 export function Footer() {
+  const [spotlightShortcut, setSpotlightShortcut] = useState<string[]>(['Ctrl', 'Shift', 'Espacio']);
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const settings = await getAppSettings();
+        if (settings.shortcuts?.spotlight) {
+          const parts = settings.shortcuts.spotlight.split('+').map(p => {
+            if (p === 'CommandOrControl') return 'Ctrl';
+            if (p === 'Space') return 'Espacio';
+            return p;
+          });
+          setSpotlightShortcut(parts);
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    fetchSettings();
+    const un = listen('settings-updated', fetchSettings);
+    return () => {
+      un.then(f => f());
+    };
+  }, []);
+
   return (
     <footer className="flex shrink-0 items-center gap-5 overflow-x-auto border-t border-line bg-sidebar px-4 py-2 text-[11px] text-muted">
-      <Shortcut keys={['Ctrl', 'Shift', 'Espacio']} label="Spotlight" />
+      <Shortcut keys={spotlightShortcut} label="Spotlight" />
       <Shortcut keys={['Clic der.']} label="Acciones" />
       <Shortcut keys={['Ctrl', 'clic']} label="Seleccionar varios" />
       <Shortcut keys={['Arrastrar']} label="Categorizar / reordenar" />
