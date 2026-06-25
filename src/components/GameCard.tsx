@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { memo, useRef, useState } from 'react';
 import type { Game } from '@/lib/types';
 import { SOURCE_META } from '@/lib/sources';
 import { coverSrc } from '@/lib/cover';
@@ -16,7 +16,7 @@ function fallbackChain(game: Game): string[] {
 /** How far the card tilts toward the cursor, in degrees. */
 const MAX_TILT = 11;
 
-export function GameCard({
+export const GameCard = memo(function GameCard({
   game,
   onLaunch,
   onRemove,
@@ -61,10 +61,11 @@ export function GameCard({
   const src = chain[stage];
   const exhausted = stage >= chain.length;
 
-  // Cursor-follow 3D tilt + glare. `active` distinguishes the snappy follow from
-  // the slower spring back to flat when the pointer leaves.
+  // Cursor-follow 3D tilt + glare applied directly to the DOM — no React
+  // re-render per mousemove. `ref` targets the perspective container;
+  // `glareRef` targets the glare overlay so we update its gradient too.
   const ref = useRef<HTMLDivElement>(null);
-  const [tilt, setTilt] = useState({ rx: 0, ry: 0, gx: 50, gy: 50, active: false });
+  const glareRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
 
   function handleMove(e: React.MouseEvent) {
@@ -73,17 +74,20 @@ export function GameCard({
     const r = el.getBoundingClientRect();
     const px = (e.clientX - r.left) / r.width;
     const py = (e.clientY - r.top) / r.height;
-    setTilt({
-      rx: (0.5 - py) * MAX_TILT,
-      ry: (px - 0.5) * MAX_TILT,
-      gx: px * 100,
-      gy: py * 100,
-      active: true,
-    });
+    const rx = (0.5 - py) * MAX_TILT;
+    const ry = (px - 0.5) * MAX_TILT;
+    el.style.transform = `perspective(700px) rotateX(${rx}deg) rotateY(${ry}deg) scale(1.05)`;
+    el.style.transition = 'transform 90ms ease-out';
+    if (glareRef.current) {
+      glareRef.current.style.background = `radial-gradient(circle at ${px * 100}% ${py * 100}%, rgba(255,255,255,0.22), transparent 50%)`;
+    }
   }
 
   function handleLeave() {
-    setTilt((s) => ({ ...s, rx: 0, ry: 0, active: false }));
+    const el = ref.current;
+    if (!el) return;
+    el.style.transform = 'perspective(700px) rotateX(0deg) rotateY(0deg) scale(1)';
+    el.style.transition = 'transform 300ms ease-out';
   }
 
   function handleDragStart(e: React.DragEvent) {
@@ -92,6 +96,11 @@ export function GameCard({
     e.dataTransfer.setData('text/plain', game.id);
     e.dataTransfer.effectAllowed = 'copy';
     handleLeave();
+
+    // Apply drag-shrink scale imperatively (bypasses React render cycle).
+    if (ref.current) {
+      ref.current.style.transform = 'scale(0.96)';
+    }
 
     // Custom drag image: a small theme-aware chip (cover + name) instead of the
     // whole oversized card. Rendered offscreen just long enough to snapshot it.
@@ -118,6 +127,11 @@ export function GameCard({
   }
 
   function handleDragEnd() {
+    // Reset transform to identity on drag end.
+    if (ref.current) {
+      ref.current.style.transform = '';
+      ref.current.style.transition = 'transform 300ms ease-out';
+    }
     setDragging(false);
     onDragStateChange?.(false);
   }
@@ -148,14 +162,6 @@ export function GameCard({
         if (!onContextMenu) return;
         e.preventDefault();
         onContextMenu(game, e.clientX, e.clientY);
-      }}
-      style={{
-        // Per-card perspective: each card has its own vanishing point at its
-        // centre, so cards near the edges tilt correctly instead of skewing.
-        transform: dragging
-          ? 'scale(0.96)'
-          : `perspective(700px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg) scale(${tilt.active ? 1.05 : 1})`,
-        transition: tilt.active ? 'transform 90ms ease-out' : 'transform 300ms ease-out',
       }}
       className={`group relative aspect-[2/3] overflow-hidden border bg-elevated shadow-card will-change-transform hover:shadow-glow ${
         selectionMode ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'
@@ -189,6 +195,7 @@ export function GameCard({
             src={logo}
             alt={game.name}
             loading="lazy"
+            decoding="async"
             draggable={false}
             className="max-h-[55%] max-w-[70%] object-contain drop-shadow-lg"
           />
@@ -199,6 +206,7 @@ export function GameCard({
           src={src}
           alt={game.name}
           loading="lazy"
+          decoding="async"
           draggable={false}
           onError={() => setStage((s) => s + 1)}
           className="h-full w-full object-cover"
@@ -212,13 +220,13 @@ export function GameCard({
         </div>
       )}
 
-      {/* Glare: a soft highlight tracking the cursor for a glossy, modern sheen. */}
+      {/* Glare: a soft highlight tracking the cursor for a glossy, modern sheen.
+          The background gradient is updated imperatively via glareRef. */}
       <div
+        ref={glareRef}
         aria-hidden
         className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-200 group-hover:opacity-100"
-        style={{
-          background: `radial-gradient(circle at ${tilt.gx}% ${tilt.gy}%, rgba(255,255,255,0.22), transparent 50%)`,
-        }}
+        style={{ background: 'radial-gradient(circle at 50% 50%, rgba(255,255,255,0.22), transparent 50%)' }}
       />
 
       {/* Hover overlay (hidden in selection mode) */}
@@ -330,4 +338,4 @@ export function GameCard({
     </div>
     </div>
   );
-}
+});

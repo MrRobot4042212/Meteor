@@ -258,7 +258,7 @@ pub fn start(app: AppHandle) {
                 since_index = 0;
             }
 
-            sys.refresh_processes();
+            sys.refresh_processes_specifics(sysinfo::ProcessRefreshKind::new().with_exe(sysinfo::UpdateKind::Always));
             let paths: Vec<String> = sys
                 .processes()
                 .values()

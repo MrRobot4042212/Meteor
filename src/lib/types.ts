@@ -103,6 +103,16 @@ export interface OverlaySettings {
   show_ram: boolean;
   /** Which GPU to sample: "auto" | "nvml:<i>" | "adlx:<i>". */
   gpu: string;
+  /** CSS hex color for metric labels ("FPS", "GPU"…). */
+  label_color: string;
+  /** CSS hex color for metric values (numbers). */
+  value_color: string;
+  /** CSS hex color for accented values (FPS, GPU%, CPU%) and the game title. */
+  accent_color: string;
+  /** HUD background opacity 0–100. */
+  bg_opacity: number;
+  /** Font size key: "xs" | "sm" | "base". */
+  font_size: string;
 }
 
 export interface AppSettings {

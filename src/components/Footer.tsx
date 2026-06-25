@@ -26,7 +26,7 @@ function Shortcut({ keys, label }: { keys: React.ReactNode[]; label: string }) {
 export function Footer() {
   return (
     <footer className="flex shrink-0 items-center gap-5 overflow-x-auto border-t border-line bg-sidebar px-4 py-2 text-[11px] text-muted">
-      <Shortcut keys={['Shift', 'Espacio']} label="Spotlight" />
+      <Shortcut keys={['Ctrl', 'Shift', 'Espacio']} label="Spotlight" />
       <Shortcut keys={['Clic der.']} label="Acciones" />
       <Shortcut keys={['Ctrl', 'clic']} label="Seleccionar varios" />
       <Shortcut keys={['Arrastrar']} label="Categorizar / reordenar" />

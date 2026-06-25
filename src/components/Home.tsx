@@ -356,13 +356,13 @@ function Thumb({
 
   if (cover) {
     // eslint-disable-next-line @next/next/no-img-element
-    return <img src={cover} alt={game.name} draggable={false} className={`object-cover ${className}`} />;
+    return <img src={cover} alt={game.name} draggable={false} loading="lazy" decoding="async" className={`object-cover ${className}`} />;
   }
   if (logo) {
     return (
       <div className={`flex items-center justify-center bg-gradient-to-b from-elevated to-surface ${className}`}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={logo} alt={game.name} draggable={false} className="max-h-[55%] max-w-[70%] object-contain" />
+        <img src={logo} alt={game.name} draggable={false} loading="lazy" decoding="async" className="max-h-[55%] max-w-[70%] object-contain" />
       </div>
     );
   }

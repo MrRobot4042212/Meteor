@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Rich metadata for a game's detail page, resolved from IGDB and cached on disk.
@@ -86,11 +86,18 @@ struct Token {
 }
 static TOKEN: Mutex<Option<Token>> = Mutex::new(None);
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(6))
-        .timeout_read(Duration::from_secs(8))
-        .build()
+/// Process-wide HTTP agent: reuses the TCP connection pool across all IGDB
+/// requests (cover resolve + detail fetch) so each call doesn't pay the
+/// TLS/TCP handshake cost from scratch.
+static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+
+fn agent() -> &'static ureq::Agent {
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(6))
+            .timeout_read(Duration::from_secs(8))
+            .build()
+    })
 }
 
 fn now() -> u64 {

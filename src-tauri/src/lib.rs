@@ -41,19 +41,45 @@ use tauri::{AppHandle, Emitter, Manager};
 /// the best available metadata (Steam first, since it ships CDN cover art).
 #[tauri::command]
 fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
+    // Run all store scanners in parallel. Each is independent and failure-tolerant
+    // (degrades to empty on missing store / corrupt data). Priority order is
+    // preserved: store-specific scanners are extended first so they win dedup
+    // over the generic windows_apps fallback. Manual apps are sequential after
+    // because they need the AppHandle and are typically very few.
+    let [steam, epic, gog, xbox, ea, ubisoft, bnet, win] =
+        std::thread::scope(|s| {
+            let t_steam   = s.spawn(|| steam::scan().unwrap_or_default());
+            let t_epic    = s.spawn(|| epic::scan().unwrap_or_default());
+            let t_gog     = s.spawn(|| gog::scan().unwrap_or_default());
+            let t_xbox    = s.spawn(|| xbox::scan().unwrap_or_default());
+            let t_ea      = s.spawn(|| ea::scan().unwrap_or_default());
+            let t_ubisoft = s.spawn(|| ubisoft::scan().unwrap_or_default());
+            // Battle.net before windows_apps so its richer per-flavor WoW entries
+            // win the dedup over the single generic registry entry.
+            let t_bnet    = s.spawn(|| battlenet::scan().unwrap_or_default());
+            // Generic registry scan last so the dedup keeps the richer native entry.
+            let t_win     = s.spawn(|| windows_apps::scan().unwrap_or_default());
+            [
+                t_steam.join().unwrap_or_default(),
+                t_epic.join().unwrap_or_default(),
+                t_gog.join().unwrap_or_default(),
+                t_xbox.join().unwrap_or_default(),
+                t_ea.join().unwrap_or_default(),
+                t_ubisoft.join().unwrap_or_default(),
+                t_bnet.join().unwrap_or_default(),
+                t_win.join().unwrap_or_default(),
+            ]
+        });
+
     let mut games: Vec<Game> = Vec::new();
-    games.extend(steam::scan().unwrap_or_default());
-    games.extend(epic::scan().unwrap_or_default());
-    games.extend(gog::scan().unwrap_or_default());
-    games.extend(xbox::scan().unwrap_or_default());
-    games.extend(ea::scan().unwrap_or_default());
-    games.extend(ubisoft::scan().unwrap_or_default());
-    // Battle.net (WoW flavors) before the generic scan so its richer per-flavor
-    // entries win the dedup over the single "World of Warcraft" registry entry.
-    games.extend(battlenet::scan().unwrap_or_default());
-    // Generic registry scan last, so dedup keeps the richer native entry when a
-    // game is also found by a dedicated scanner.
-    games.extend(windows_apps::scan().unwrap_or_default());
+    games.extend(steam);
+    games.extend(epic);
+    games.extend(gog);
+    games.extend(xbox);
+    games.extend(ea);
+    games.extend(ubisoft);
+    games.extend(bnet);
+    games.extend(win);
     games.extend(storage::load_manual(&app)?);
 
     // Deduplicate by name, keeping the first (highest-priority) occurrence.
@@ -549,7 +575,7 @@ pub fn run() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    // Ctrl+Shift+O toggles the metrics overlay; Shift+Space opens Spotlight.
+                    // Ctrl+Shift+O toggles the metrics overlay; Ctrl+Shift+Space opens Spotlight.
                     if *shortcut
                         == Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO)
                     {
@@ -620,9 +646,9 @@ pub fn run() {
             presentmon::start(handle.clone());
             cputemp::start(handle.clone());
             playtime::start(handle);
-            // Register the global shortcuts: Spotlight (Shift+Space) and the metrics
+            // Register the global shortcuts: Spotlight (Ctrl+Shift+Space) and the metrics
             // overlay toggle (Ctrl+Shift+O).
-            let spotlight = Shortcut::new(Some(Modifiers::SHIFT), Code::Space);
+            let spotlight = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
             let _ = app.global_shortcut().register(spotlight);
             let overlay_toggle =
                 Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);

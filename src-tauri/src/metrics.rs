@@ -127,10 +127,7 @@ pub fn start(app: AppHandle) {
         // Last GPU selection applied to ADLX, so we only re-select when it changes.
         #[cfg(windows)]
         let mut applied_gpu = String::new();
-        // Last foreground window seen, so we only re-assert topmost when it changes
-        // (re-stacking every tick makes the overlay flicker).
-        #[cfg(windows)]
-        let mut last_fg: isize = 0;
+
 
         loop {
             std::thread::sleep(Duration::from_millis(INTERVAL_MS.load(Ordering::Relaxed)));
@@ -260,16 +257,31 @@ pub fn start(app: AppHandle) {
                     #[cfg(windows)]
                     {
                         force_topmost(&w);
-                        last_fg = 0; // force a re-assert on the next foreground read
+                        // Exclude the overlay from game screenshots and screen-capture
+                        // tools (OBS, Xbox Game Bar, etc.). Available on Windows 10
+                        // 2004+; silently ignored on older versions.
+                        if let Ok(hwnd) = w.hwnd() {
+                            use windows::Win32::UI::WindowsAndMessaging::{
+                                SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+                            };
+                            let _ = unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) };
+                        }
                     }
                 }
+                // Re-assert TOPMOST every tick while the game is in the foreground.
+                // Using the toggle NOTOPMOST→TOPMOST recovers from cases where a
+                // borderless game re-acquires the top of the z-order after an alt-tab.
+                // Two SetWindowPos calls per tick is negligible overhead, and using
+                // SWP_NOACTIVATE ensures we never steal input focus from the game.
+                // NOTE: true exclusive-fullscreen (D3D independent flip) bypasses the
+                // DWM compositor entirely — no HWND overlay can appear on top without
+                // DLL injection into the game process.
                 #[cfg(windows)]
                 {
                     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
                     let fg = unsafe { GetForegroundWindow() }.0 as isize;
-                    if fg != last_fg {
+                    if fg != 0 {
                         force_topmost(&w);
-                        last_fg = fg;
                     }
                 }
                 let _ = app.emit_to("overlay", "metrics-sample", &sample);

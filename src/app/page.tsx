@@ -121,6 +121,11 @@ function MainApp() {
   const [splashExiting, setSplashExiting] = useState(false);
   const [filter, setFilter] = useState<Filter>('home');
   const [query, setQuery] = useState('');
+  // Debounced query for the expensive fuzzy-filter (visible useMemo): the input
+  // always reflects the raw query immediately, but the grid only re-filters
+  // 150 ms after the user stops typing — eliminating per-keystroke recalculations
+  // over large libraries.
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [sort, setSort] = useState<SortKey>('name');
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [selectMode, setSelectMode] = useState(false);
@@ -198,16 +203,27 @@ function MainApp() {
 
   const categoryNames = useMemo(() => categories.map((c) => c.name), [categories]);
 
+  // Debounce: update debouncedQuery 150ms after the user stops typing.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 150);
+    return () => clearTimeout(t);
+  }, [query]);
+
   const counts = useMemo<Record<string, number>>(() => {
-    const base: Record<string, number> = {
-      all: games.length,
-      favorites: games.filter((g) => g.favorite).length,
-    };
-    for (const source of SOURCE_ORDER) {
-      base[source] = games.filter((g) => g.source === source).length;
-    }
-    for (const name of categoryNames) {
-      base[`cat:${name}`] = games.filter((g) => g.categories?.includes(name)).length;
+    // Single O(N) pass over games instead of N separate Array.filter() calls
+    // (one per source + one per category). For 500 games + 10 categories the
+    // old approach did ~6500 iterations; this does exactly 500.
+    const base: Record<string, number> = { all: 0, favorites: 0 };
+    for (const source of SOURCE_ORDER) base[source] = 0;
+    for (const name of categoryNames) base[`cat:${name}`] = 0;
+    for (const g of games) {
+      base.all++;
+      if (g.favorite) base.favorites++;
+      base[g.source] = (base[g.source] ?? 0) + 1;
+      for (const c of g.categories ?? []) {
+        const key = `cat:${c}`;
+        if (key in base) base[key]++;
+      }
     }
     return base;
   }, [games, categoryNames]);
@@ -222,7 +238,8 @@ function MainApp() {
     });
 
     // A query takes over ordering: fuzzy-match and rank by score.
-    const q = query.trim();
+    // Uses the debounced query so the grid re-filters only after typing pauses.
+    const q = debouncedQuery.trim();
     if (q) {
       return inFilter
         .map((g) => ({ g, s: fuzzyScore(q, g.name) }))
@@ -240,7 +257,7 @@ function MainApp() {
     else if (sort === 'recent') arr.sort((a, b) => last(b.id) - last(a.id) || byName(a, b));
     else arr.sort(byName);
     return arr;
-  }, [games, filter, query, sort, playtimes]);
+  }, [games, filter, debouncedQuery, sort, playtimes]);
 
   // Items for the right-click context menu on a card.
   function menuItems(game: Game): MenuItem[] {

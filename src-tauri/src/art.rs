@@ -6,8 +6,29 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
+
+/// In-memory cache for cover URL lookups (avoids repeated disk reads on each
+/// `resolve()` call during the parallel cover-pass, which hits the same file
+/// with concurrency-3 workers).
+static COVER_CACHE_MEM: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
+/// In-memory cache for IGDB detail lookups.
+static DETAILS_CACHE_MEM: Mutex<Option<HashMap<String, DetailEntry>>> = Mutex::new(None);
+
+/// Process-wide HTTP agent for cover downloads. Reuses TCP/TLS connections
+/// across all parallel downloads, cutting per-request handshake overhead.
+static DOWNLOAD_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+
+fn agent() -> &'static ureq::Agent {
+    DOWNLOAD_AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(6))
+            .timeout_read(Duration::from_secs(15))
+            .build()
+    })
+}
 
 const CACHE_FILE: &str = "cover_cache.json";
 const DETAILS_CACHE_FILE: &str = "details_cache.json";
@@ -127,15 +148,27 @@ fn details_cache_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn load_details_cache(app: &AppHandle) -> HashMap<String, DetailEntry> {
-    details_cache_path(app)
+    // Fast path: return the in-memory snapshot if already populated.
+    {
+        let guard = DETAILS_CACHE_MEM.lock().unwrap();
+        if let Some(ref map) = *guard {
+            return map.clone();
+        }
+    }
+    // Cold start: read from disk and warm the in-memory cache.
+    let map: HashMap<String, DetailEntry> = details_cache_path(app)
         .ok()
         .filter(|p| p.exists())
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    *DETAILS_CACHE_MEM.lock().unwrap() = Some(map.clone());
+    map
 }
 
 fn save_details_cache(app: &AppHandle, cache: &HashMap<String, DetailEntry>) -> Result<(), String> {
+    // Update in-memory cache so subsequent loads skip the disk.
+    *DETAILS_CACHE_MEM.lock().unwrap() = Some(cache.clone());
     let path = details_cache_path(app)?;
     let data = serde_json::to_string(cache).map_err(|e| e.to_string())?;
     fs::write(&path, data).map_err(|e| e.to_string())
@@ -144,6 +177,9 @@ fn save_details_cache(app: &AppHandle, cache: &HashMap<String, DetailEntry>) -> 
 /// Drop the URL cache and every downloaded image (e.g. after the IGDB
 /// credentials change) so covers are resolved and re-fetched from scratch.
 pub fn clear_cache(app: &AppHandle) -> Result<(), String> {
+    // Invalidate in-memory caches so the next resolve() re-reads from disk (empty).
+    *COVER_CACHE_MEM.lock().unwrap() = None;
+    *DETAILS_CACHE_MEM.lock().unwrap() = None;
     if let Ok(path) = cache_path(app) {
         if path.exists() {
             fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -207,12 +243,7 @@ fn name_variants(name: &str) -> Vec<String> {
     out
 }
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(6))
-        .timeout_read(Duration::from_secs(15))
-        .build()
-}
+
 
 /// Download an image to `dest`. Returns true on success.
 fn download(url: &str, dest: &PathBuf) -> bool {
@@ -267,15 +298,27 @@ fn cover_file(app: &AppHandle, key: &str) -> Result<PathBuf, String> {
 }
 
 fn load_cache(app: &AppHandle) -> HashMap<String, Entry> {
-    cache_path(app)
+    // Fast path: return the in-memory snapshot if already populated.
+    {
+        let guard = COVER_CACHE_MEM.lock().unwrap();
+        if let Some(ref map) = *guard {
+            return map.clone();
+        }
+    }
+    // Cold start: read from disk and warm the in-memory cache.
+    let map: HashMap<String, Entry> = cache_path(app)
         .ok()
         .filter(|p| p.exists())
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    *COVER_CACHE_MEM.lock().unwrap() = Some(map.clone());
+    map
 }
 
 fn save_cache(app: &AppHandle, cache: &HashMap<String, Entry>) -> Result<(), String> {
+    // Update in-memory cache so subsequent loads skip the disk.
+    *COVER_CACHE_MEM.lock().unwrap() = Some(cache.clone());
     let path = cache_path(app)?;
     let data = serde_json::to_string(cache).map_err(|e| e.to_string())?;
     fs::write(&path, data).map_err(|e| e.to_string())

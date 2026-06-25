@@ -15,8 +15,24 @@ import {
   isElevated,
   restartAsAdmin,
 } from '@/lib/tauri';
-import type { OverlaySettings, OverlayPosition, SystemInfo } from '@/lib/types';
+import type { OverlaySettings, OverlayPosition, SystemInfo, MetricsSample } from '@/lib/types';
 import { CloseIcon, InfoIcon, GearIcon, FireIcon } from './icons';
+import { OverlayPanel, OVERLAY_CORNER } from './Overlay';
+
+/** Sample telemetry data used by the live overlay preview inside the settings panel. */
+const PREVIEW_SAMPLE: MetricsSample = {
+  game: 'Cyberpunk 2077',
+  cpu_usage: 34,
+  ram_used_mb: 16384,
+  ram_total_mb: 32768,
+  gpu_usage: 87,
+  gpu_temp_c: 72,
+  vram_used_mb: 8192,
+  vram_total_mb: 12288,
+  fps: 144,
+  frametime_ms: 6.9,
+  cpu_temp_c: 68,
+};
 
 /** MB → human GB/MB string. */
 function fmtMem(mb: number): string {
@@ -339,6 +355,11 @@ function MetricsTab({
               Aparece solo con un juego en marcha. Actívalo/desactívalo en cualquier
               momento con <kbd className="bg-elevated px-1">Ctrl+Shift+O</kbd>.
             </p>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted/70">
+              ⚠ El overlay requiere modo <strong>borderless windowed</strong>. El fullscreen
+              exclusivo (D3D flip) bypassa el compositor de Windows y no puede ser superpuesto
+              por ninguna ventana nativa.
+            </p>
           </Card>
 
           {overlay.enabled && (
@@ -408,6 +429,70 @@ function MetricsTab({
                     );
                   })}
                 </div>
+              </Card>
+
+              {/* ── Appearance ─────────────────────────────────────────────── */}
+              <Card title="Apariencia">
+                <div className="space-y-5">
+                  {/* Color pickers */}
+                  <div>
+                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">Colores</p>
+                    <div className="space-y-2">
+                      <ColorPicker
+                        label="Etiquetas (FPS, GPU…)"
+                        value={overlay.label_color}
+                        onChange={(v) => updateOverlay({ label_color: v })}
+                      />
+                      <ColorPicker
+                        label="Valores (números)"
+                        value={overlay.value_color}
+                        onChange={(v) => updateOverlay({ value_color: v })}
+                      />
+                      <ColorPicker
+                        label="Acento (FPS, GPU%, título)"
+                        value={overlay.accent_color}
+                        onChange={(v) => updateOverlay({ accent_color: v })}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Background opacity */}
+                  <div>
+                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">Opacidad del fondo</p>
+                    <SegmentedControl
+                      options={[
+                        { label: '50%', value: 50 },
+                        { label: '70%', value: 70 },
+                        { label: '85%', value: 85 },
+                        { label: '95%', value: 95 },
+                      ]}
+                      value={overlay.bg_opacity}
+                      onChange={(v) => updateOverlay({ bg_opacity: v as number })}
+                    />
+                  </div>
+
+                  {/* Font size */}
+                  <div>
+                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">Tamaño de texto</p>
+                    <SegmentedControl
+                      options={[
+                        { label: 'Pequeño', value: 'xs' },
+                        { label: 'Normal', value: 'sm' },
+                        { label: 'Grande', value: 'base' },
+                      ]}
+                      value={overlay.font_size}
+                      onChange={(v) => updateOverlay({ font_size: v as string })}
+                    />
+                  </div>
+                </div>
+              </Card>
+
+              {/* ── Live preview ───────────────────────────────────────────── */}
+              <Card title="Previsualización en vivo">
+                <p className="mb-3 text-xs text-muted">
+                  Así se verá el overlay con la configuración actual. Datos de ejemplo.
+                </p>
+                <OverlayPreview cfg={overlay} />
               </Card>
             </>
           )}
@@ -609,6 +694,110 @@ function AppTab({
 
 
 /* ----------------------------------------------------------- UI primitives --- */
+
+/**
+ * Live preview of the overlay inside the settings panel.
+ * Uses mock sample data so the user can see exactly how the HUD will look.
+ */
+function OverlayPreview({ cfg }: { cfg: OverlaySettings }) {
+  const isTop  = cfg.position.startsWith('top');
+  const isLeft = cfg.position.endsWith('left');
+
+  return (
+    <div className="relative overflow-hidden border border-line" style={{ aspectRatio: '16/9' }}>
+      {/* Simulated game background */}
+      <div className="absolute inset-0 bg-gradient-to-br from-gray-950 via-slate-900 to-gray-950" />
+      {/* Subtle scanline texture */}
+      <div
+        className="absolute inset-0 opacity-10"
+        style={{
+          backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.4) 3px, rgba(0,0,0,0.4) 4px)',
+        }}
+      />
+      {/* Faint game-world decoration */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="select-none text-[11px] font-medium uppercase tracking-widest text-white/10">
+          Previsualización
+        </span>
+      </div>
+      {/* Overlay panel positioned in the chosen corner */}
+      <div
+        className="absolute"
+        style={{
+          top:    isTop    ? '8px'  : undefined,
+          bottom: !isTop   ? '8px'  : undefined,
+          left:   isLeft   ? '8px'  : undefined,
+          right:  !isLeft  ? '8px'  : undefined,
+        }}
+      >
+        {/* Scale down the panel so it fits nicely in the preview box */}
+        <div style={{ transform: 'scale(0.85)', transformOrigin: isTop ? (isLeft ? 'top left' : 'top right') : (isLeft ? 'bottom left' : 'bottom right') }}>
+          <OverlayPanel cfg={cfg} sample={PREVIEW_SAMPLE} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Color picker: a native <input type="color"> styled to look like the Meteor design. */
+function ColorPicker({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-xs text-muted">{label}</span>
+      <label
+        className="relative h-7 w-10 cursor-pointer overflow-hidden border border-line transition hover:border-accent/60"
+        title={value}
+      >
+        {/* Color swatch visible surface */}
+        <div className="absolute inset-0" style={{ background: value }} />
+        {/* Native color input sits on top, invisible but captures clicks */}
+        <input
+          type="color"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        />
+      </label>
+    </div>
+  );
+}
+
+/** Segmented button group for selecting from a fixed set of options. */
+function SegmentedControl<T extends string | number>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { label: string; value: T }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex overflow-hidden border border-line">
+      {options.map((o) => (
+        <button
+          key={String(o.value)}
+          onClick={() => onChange(o.value)}
+          className={`flex-1 px-2 py-1.5 text-xs transition ${
+            value === o.value
+              ? 'bg-accent font-medium text-white'
+              : 'bg-elevated text-muted hover:text-ink'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function TabHeader({ title, desc }: { title: string; desc: string }) {
   return (

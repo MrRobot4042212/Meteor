@@ -128,6 +128,21 @@ pub struct OverlaySettings {
     /// Which GPU to sample: "auto" | "nvml:<i>" | "adlx:<i>".
     #[serde(default = "default_overlay_gpu")]
     pub gpu: String,
+    /// Color of metric labels ("FPS", "GPU"…). CSS hex color.
+    #[serde(default = "default_label_color")]
+    pub label_color: String,
+    /// Color of metric values (numbers). CSS hex color.
+    #[serde(default = "default_value_color")]
+    pub value_color: String,
+    /// Accent color for FPS, GPU%, CPU% and the game title. CSS hex color.
+    #[serde(default = "default_accent_color")]
+    pub accent_color: String,
+    /// Background opacity of the HUD panel, 0–100.
+    #[serde(default = "default_bg_opacity")]
+    pub bg_opacity: u8,
+    /// Font-size key: "xs" | "sm" | "base".
+    #[serde(default = "default_font_size_key")]
+    pub font_size: String,
 }
 
 impl Default for OverlaySettings {
@@ -145,6 +160,11 @@ impl Default for OverlaySettings {
             show_cpu: true,
             show_ram: true,
             gpu: default_overlay_gpu(),
+            label_color: default_label_color(),
+            value_color: default_value_color(),
+            accent_color: default_accent_color(),
+            bg_opacity: default_bg_opacity(),
+            font_size: default_font_size_key(),
         }
     }
 }
@@ -159,6 +179,26 @@ fn default_overlay_gpu() -> String {
 
 fn default_overlay_interval() -> u64 {
     1000
+}
+
+fn default_label_color() -> String {
+    "#8a8a8a".to_string()
+}
+
+fn default_value_color() -> String {
+    "#ffffff".to_string()
+}
+
+fn default_accent_color() -> String {
+    "#ef4444".to_string()
+}
+
+fn default_bg_opacity() -> u8 {
+    85
+}
+
+fn default_font_size_key() -> String {
+    "sm".to_string()
 }
 
 fn yes() -> bool {
