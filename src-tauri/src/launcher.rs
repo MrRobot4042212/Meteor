@@ -11,6 +11,7 @@ use std::process::Command;
 /// - Everything else (manual apps, GOG, Xbox, EA) is spawned directly from its
 ///   executable, with the working directory set to the executable's folder.
 pub fn launch(game: &Game) -> Result<(), String> {
+    crate::playtime::notify_launched(&game.id);
     match game.source {
         GameSource::Steam => {
             let app_id = game

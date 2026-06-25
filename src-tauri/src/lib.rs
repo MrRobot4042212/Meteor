@@ -729,6 +729,12 @@ pub fn run() {
             user_screenshots,
             launch_game
         ])
-        .run(tauri::generate_context!())
-        .expect("error al iniciar la aplicación Tauri");
+        .build(tauri::generate_context!())
+        .expect("error al iniciar la aplicación Tauri")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                crate::presentmon::cleanup();
+                crate::cputemp::cleanup();
+            }
+        });
 }

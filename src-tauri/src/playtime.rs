@@ -6,6 +6,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 use tauri::{AppHandle, Emitter, Manager};
 
+static LAUNCHED_FROM_METEOR: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+
 const STORE_FILE: &str = "playtime.json";
 /// In-flight sessions, persisted so a Meteor crash/close doesn't lose time.
 const ACTIVE_FILE: &str = "active_sessions.json";
@@ -165,6 +167,15 @@ pub fn reconcile(app: &AppHandle) {
     let _ = app.emit("playtime-updated", "");
 }
 
+/// Registra que un juego fue lanzado a través de Meteor, para que sus métricas
+/// sean mostradas en el overlay.
+pub fn notify_launched(id: &str) {
+    if let Ok(mut list) = LAUNCHED_FROM_METEOR.lock() {
+        list.retain(|(i, _)| i != id);
+        list.push((id.to_string(), now()));
+    }
+}
+
 // --- Global process watcher ------------------------------------------------
 
 /// Library entries to watch, read from the on-disk cache written by
@@ -306,8 +317,17 @@ pub fn start(app: AppHandle) {
                 .max_by_key(|(_, s)| *s)
                 .map(|(id, _)| id);
 
-            // Publish the foreground game (name + pid) to the metrics overlay.
-            let entry = primary.as_ref().and_then(|id| index.iter().find(|e| &e.id == id));
+            // Mantenemos en la lista de "lanzados" a los juegos que sigan en progreso
+            // o que hayan sido lanzados hace menos de 2 minutos (por si tardan en abrir).
+            let mut launched_list = LAUNCHED_FROM_METEOR.lock().unwrap();
+            launched_list.retain(|(id, launch_ts)| {
+                active.contains_key(id) || ts.saturating_sub(*launch_ts) < 120
+            });
+
+            // Publish the foreground game (name + pid) to the metrics overlay
+            // ONLY if it was launched from Meteor.
+            let show_metrics_for = primary.as_ref().filter(|id| launched_list.iter().any(|(l_id, _)| l_id == *id));
+            let entry = show_metrics_for.and_then(|id| index.iter().find(|e| e.id == **id));
             let game_name = entry.map(|e| e.name.clone());
             let game_pid = entry
                 .and_then(|e| find_pid(&sys, e.install_dir.as_deref(), e.executable.as_deref()));

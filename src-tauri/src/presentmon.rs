@@ -19,6 +19,8 @@ use tauri::{AppHandle, Manager};
 /// Latest FPS / frametime as hundredths (0 = no data), so they fit in atomics.
 static FPS_X100: AtomicU32 = AtomicU32::new(0);
 static FRAMETIME_X100: AtomicU32 = AtomicU32::new(0);
+/// PID of the spawned PresentMon.exe process, to clean it up on exit.
+static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 
 /// Current FPS and average frametime (ms), if PresentMon is producing data.
 pub fn current() -> (Option<f32>, Option<f32>) {
@@ -73,10 +75,27 @@ fn spawn(bin: &Path, pid: u32) -> std::io::Result<Child> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = cmd.spawn()?;
+    CHILD_PID.store(child.id(), Ordering::Relaxed);
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || parse_stdout(out));
     }
     Ok(child)
+}
+
+/// Cleanup any running PresentMon process spawned by us. Called on app exit.
+pub fn cleanup() {
+    let pid = CHILD_PID.load(Ordering::Relaxed);
+    if pid != 0 {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+    }
 }
 
 /// Read PresentMon's CSV stream and maintain a ~1s rolling window of frame times.

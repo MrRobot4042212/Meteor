@@ -17,6 +17,8 @@ use tauri::{AppHandle, Manager};
 
 /// Latest CPU temperature in °C (0 = no data).
 static CPU_TEMP_C: AtomicU32 = AtomicU32::new(0);
+/// PID of the spawned cputemp.exe process, to clean it up on exit.
+static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 
 /// Current CPU temperature, if the sidecar is producing data.
 pub fn current() -> Option<u32> {
@@ -58,6 +60,7 @@ fn spawn(bin: &PathBuf) -> std::io::Result<Child> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = cmd.spawn()?;
+    CHILD_PID.store(child.id(), Ordering::Relaxed);
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || {
             let reader = BufReader::new(out);
@@ -75,6 +78,22 @@ fn spawn(bin: &PathBuf) -> std::io::Result<Child> {
         });
     }
     Ok(child)
+}
+
+/// Cleanup any running cputemp process spawned by us. Called on app exit.
+pub fn cleanup() {
+    let pid = CHILD_PID.load(Ordering::Relaxed);
+    if pid != 0 {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+    }
 }
 
 /// Start the controller thread. Idle until the overlay wants CPU temp and a game
