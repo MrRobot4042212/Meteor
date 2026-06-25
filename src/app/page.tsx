@@ -28,6 +28,7 @@ import { CategoryDialog } from '@/components/CategoryDialog';
 import { NewCategoryDialog } from '@/components/NewCategoryDialog';
 import { EditCategoryDialog } from '@/components/EditCategoryDialog';
 import { Splash } from '@/components/Splash';
+import { IntroSplash } from '@/components/IntroSplash';
 import { Spotlight } from '@/components/Spotlight';
 import { Footer } from '@/components/Footer';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -89,6 +90,8 @@ export default function Root() {
 }
 
 function MainApp() {
+  const [introDone, setIntroDone] = useState(false);
+
   // Onboarding gate: 'unknown' until settings load, then 'needed' (first run) or
   // 'done'. The library only auto-scans once we're past onboarding, so the slow
   // native scan never freezes the onboarding screen — the user kicks it off with
@@ -568,11 +571,13 @@ function MainApp() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-void text-ink">
-      {needsOnboarding && (
+      {!introDone && <IntroSplash onFinish={() => setIntroDone(true)} />}
+
+      {introDone && needsOnboarding && (
         <Onboarding onComplete={() => setOnboardingState('done')} />
       )}
 
-      {splashMounted && (
+      {introDone && splashMounted && (
         <Splash
           progress={coverProgress}
           exiting={splashExiting}

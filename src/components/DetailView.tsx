@@ -25,6 +25,13 @@ import {
   CloseIcon,
   AppIcon,
   GridIcon,
+  YoutubeIcon,
+  TwitchIcon,
+  RedditIcon,
+  GlobeIcon,
+  GamepadIcon,
+  ZapIcon,
+  GearIcon,
 } from './icons';
 
 function formatPlaytime(seconds: number): string {
@@ -534,9 +541,51 @@ export function DetailView({
               </Section>
             )}
 
+            {/* Dynamic Generated Links */}
+            <Section title="Comunidades y Herramientas">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                <a href={`https://www.pcgamingwiki.com/w/index.php?search=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><GamepadIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">PCGamingWiki</div>
+                </a>
+                <a href={`https://www.nexusmods.com/search/?gsearch=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><GearIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">Nexus Mods</div>
+                </a>
+                <a href={`https://www.protondb.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><AppIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">ProtonDB</div>
+                </a>
+                <a href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' wiki fandom')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><GlobeIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">Wiki / Fandom</div>
+                </a>
+                <a href={`https://www.youtube.com/results?search_query=${encodeURIComponent(game.name + ' gameplay')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><YoutubeIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">YouTube (Gameplay)</div>
+                </a>
+                <a href={`https://www.twitch.tv/directory/search?term=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><TwitchIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">Twitch</div>
+                </a>
+                <a href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' subreddit')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><RedditIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">Reddit</div>
+                </a>
+                <a href={`https://www.speedrun.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><ZapIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">Speedrun.com</div>
+                </a>
+                <a href={`https://howlongtobeat.com/?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                  <div className="text-accent"><ClockIcon className="h-5 w-5" /></div>
+                  <div className="min-w-0 flex-1 truncate font-medium">HowLongToBeat</div>
+                </a>
+              </div>
+            </Section>
+
             {/* Websites */}
-            <Section title="Enlaces Externos Útiles">
-              {details?.websites && details.websites.length > 0 ? (
+            {details?.websites && details.websites.length > 0 && (
+              <Section title="Enlaces Oficiales (IGDB)">
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {details.websites.map((w) => {
                     const info = mapWebsiteCategory(w.category);
@@ -544,8 +593,6 @@ export function DetailView({
                       <a
                         key={w.url}
                         href={w.url}
-                        target="_blank"
-                        rel="noreferrer"
                         className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80"
                       >
                         <div className="text-accent">{info.icon}</div>
@@ -554,10 +601,8 @@ export function DetailView({
                     );
                   })}
                 </div>
-              ) : (
-                <p className="text-sm text-muted">No se encontraron enlaces en IGDB para este juego.</p>
-              )}
-            </Section>
+              </Section>
+            )}
 
             {/* Similar games */}
             {similar.length > 0 && (

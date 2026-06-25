@@ -173,7 +173,7 @@ export function Home({
       )}
 
       {/* Weekly activity */}
-      {hasData && (
+{/*       {hasData && (
         <Section title="Actividad (últimos 7 días)">
           <div className="border border-line bg-surface p-5">
             <div className="flex h-40 items-end justify-between gap-2">
@@ -203,7 +203,7 @@ export function Home({
             </div>
           </div>
         </Section>
-      )}
+      )} */}
 
       {/* Most used, games and apps split into their own lists */}
       {(mostPlayedGames.length > 0 || mostUsedApps.length > 0) && (
