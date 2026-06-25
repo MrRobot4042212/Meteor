@@ -54,6 +54,7 @@ pub fn scan() -> Result<Vec<Game>, String> {
                 launch_uri: None,
                 favorite: false,
                 categories: Vec::new(),
+
             });
         }
     }
@@ -100,3 +101,4 @@ fn find_launch_exe(dir: &str) -> Option<String> {
 pub fn scan() -> Result<Vec<Game>, String> {
     Ok(Vec::new())
 }
+

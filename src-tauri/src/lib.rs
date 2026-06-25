@@ -275,6 +275,7 @@ fn add_manual_app(
         launch_uri: None,
         favorite: false,
         categories: Vec::new(),
+
     };
 
     manual.push(game.clone());
@@ -464,9 +465,40 @@ fn set_app_settings(
     settings: AppSettings,
 ) -> Result<(), String> {
     storage::save_settings(&app, &settings);
+    *state.lock().unwrap() = settings.clone();
     apply_overlay_settings(&app, &settings);
-    *state.lock().unwrap() = settings;
+    register_shortcuts(&app, &settings.shortcuts);
     Ok(())
+}
+
+fn parse_shortcut(s: &str) -> Option<tauri_plugin_global_shortcut::Shortcut> {
+    let mut s = s.to_string();
+    if let Some(idx) = s.rfind('+') {
+        let last = &s[idx+1..];
+        if last.len() == 1 {
+            let c = last.chars().next().unwrap();
+            if c.is_ascii_uppercase() {
+                s.replace_range(idx+1.., &format!("Key{}", c));
+            } else if c.is_ascii_digit() {
+                s.replace_range(idx+1.., &format!("Digit{}", c));
+            }
+        }
+    }
+    s.parse().ok()
+}
+
+fn register_shortcuts(app: &AppHandle, shortcuts: &crate::models::ShortcutsSettings) {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let _ = app.global_shortcut().unregister_all();
+    if let Some(s) = parse_shortcut(&shortcuts.spotlight) {
+        let _ = app.global_shortcut().register(s);
+    }
+    if let Some(s) = parse_shortcut(&shortcuts.overlay_toggle) {
+        let _ = app.global_shortcut().register(s);
+    }
+    if let Some(s) = parse_shortcut(&shortcuts.overlay_settings) {
+        let _ = app.global_shortcut().register(s);
+    }
 }
 
 /// Apply the overlay config live: update the sampler and, when disabling, hide the
@@ -498,6 +530,19 @@ fn toggle_overlay(app: &AppHandle) {
         apply_overlay_settings(app, &s);
         *state.lock().unwrap() = s;
     }
+}
+
+/// Make the overlay window interactive (receives mouse clicks) or click-through.
+#[tauri::command]
+fn set_overlay_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("overlay") {
+        w.set_ignore_cursor_events(!interactive)
+            .map_err(|e| e.to_string())?;
+        if interactive {
+            let _ = w.set_focus();
+        }
+    }
+    Ok(())
 }
 /// The saved Discord Rich Presence client id (empty = disabled).
 #[tauri::command]
@@ -571,16 +616,27 @@ pub fn run() {
             // from anywhere. The handler runs for our one registered shortcut.
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+                    use tauri_plugin_global_shortcut::ShortcutState;
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    // Ctrl+Shift+O toggles the metrics overlay; Ctrl+Shift+Space opens Spotlight.
-                    if *shortcut
-                        == Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO)
-                    {
+                    
+                    let settings = app.try_state::<std::sync::Mutex<crate::models::AppSettings>>()
+                        .map(|s| s.lock().unwrap().clone())
+                        .unwrap_or_else(|| crate::storage::load_settings(app));
+                    
+                    let spot_s = parse_shortcut(&settings.shortcuts.spotlight);
+                    let toggle_s = parse_shortcut(&settings.shortcuts.overlay_toggle);
+                    let settings_s = parse_shortcut(&settings.shortcuts.overlay_settings);
+
+                    if Some(*shortcut) == toggle_s {
                         toggle_overlay(app);
-                    } else {
+                    } else if Some(*shortcut) == settings_s {
+                        if let Some(w) = app.get_webview_window("overlay") {
+                            let _ = w.show();
+                        }
+                        let _ = app.emit_to("overlay", "toggle-overlay-settings", ());
+                    } else if Some(*shortcut) == spot_s {
                         show_main(app);
                         let _ = app.emit("open-spotlight", ());
                     }
@@ -588,7 +644,7 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+
             
             let handle = app.handle().clone();
             let settings = storage::load_settings(&handle);
@@ -600,7 +656,7 @@ pub fn run() {
                 settings.overlay.show_cpu_temp,
             );
             metrics::set_gpu(settings.overlay.gpu.clone());
-            app.manage(std::sync::Mutex::new(settings));
+            app.manage(std::sync::Mutex::new(settings.clone()));
 
             // Full-screen transparent, click-through, always-on-top overlay window
             // for in-game metrics. Created hidden; the metrics sampler shows it only
@@ -645,14 +701,9 @@ pub fn run() {
             metrics::start(handle.clone());
             presentmon::start(handle.clone());
             cputemp::start(handle.clone());
-            playtime::start(handle);
-            // Register the global shortcuts: Spotlight (Ctrl+Shift+Space) and the metrics
-            // overlay toggle (Ctrl+Shift+O).
-            let spotlight = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
-            let _ = app.global_shortcut().register(spotlight);
-            let overlay_toggle =
-                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
-            let _ = app.global_shortcut().register(overlay_toggle);
+            playtime::start(handle.clone());
+            // Register the global shortcuts
+            register_shortcuts(&handle, &settings.shortcuts);
 
             // System tray: Meteor lives in the tray so the watchers keep running
             // after the window is closed. Left-click or "Mostrar Meteor" reopens
@@ -727,7 +778,8 @@ pub fn run() {
             restart_as_admin,
             open_path,
             user_screenshots,
-            launch_game
+            launch_game,
+            set_overlay_interactive
         ])
         .build(tauri::generate_context!())
         .expect("error al iniciar la aplicación Tauri")

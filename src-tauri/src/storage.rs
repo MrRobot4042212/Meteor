@@ -285,6 +285,7 @@ pub fn load_settings(app: &AppHandle) -> AppSettings {
             setup_completed: false,
             minimize_to_tray: true,
             overlay: Default::default(),
+            shortcuts: Default::default(),
         };
     };
     if let Ok(data) = fs::read_to_string(path) {
@@ -296,6 +297,7 @@ pub fn load_settings(app: &AppHandle) -> AppSettings {
         setup_completed: false,
         minimize_to_tray: true,
         overlay: Default::default(),
+        shortcuts: Default::default(),
     }
 }
 

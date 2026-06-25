@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { getAppSettings } from '@/lib/tauri';
+import { getAppSettings, setOverlayInteractive } from '@/lib/tauri';
 import type { MetricsSample, OverlaySettings } from '@/lib/types';
+import { OverlaySettingsScreen } from './OverlaySettingsScreen';
 
 /** Corner placement → fixed-position classes. */
 export const OVERLAY_CORNER: Record<string, string> = {
@@ -143,6 +144,7 @@ export function OverlayPanel({
 export function Overlay() {
   const [m, setM] = useState<MetricsSample | null>(null);
   const [cfg, setCfg] = useState<OverlaySettings | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     // The overlay window must be see-through; force the document transparent
@@ -158,19 +160,42 @@ export function Overlay() {
 
     const unSample = listen<MetricsSample>('metrics-sample', (e) => setM(e.payload));
     const unCfg = listen('overlay-config', loadCfg);
+    const unSettings = listen('toggle-overlay-settings', () => {
+      setShowSettings((prev) => {
+        const next = !prev;
+        setOverlayInteractive(next).catch(() => {});
+        return next;
+      });
+    });
+
     return () => {
       unSample.then((f) => f());
       unCfg.then((f) => f());
+      unSettings.then((f) => f());
     };
   }, []);
 
-  if (!m || !cfg) return null;
+  if (!cfg) return null;
+  if (!m && !showSettings) return null;
 
   return (
-    <div
-      className={`pointer-events-none fixed ${OVERLAY_CORNER[cfg.position] ?? OVERLAY_CORNER['top-left']} select-none`}
-    >
-      <OverlayPanel cfg={cfg} sample={m} />
-    </div>
+    <>
+      {m && (
+        <div
+          className={`pointer-events-none fixed ${OVERLAY_CORNER[cfg.position] ?? OVERLAY_CORNER['top-left']} select-none`}
+        >
+          <OverlayPanel cfg={cfg} sample={m} />
+        </div>
+      )}
+      
+      {showSettings && (
+        <OverlaySettingsScreen
+          onClose={() => {
+            setShowSettings(false);
+            setOverlayInteractive(false).catch(() => {});
+          }}
+        />
+      )}
+    </>
   );
 }

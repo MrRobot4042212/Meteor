@@ -88,6 +88,39 @@ pub struct AppSettings {
     /// In-game metrics overlay configuration.
     #[serde(default)]
     pub overlay: OverlaySettings,
+    /// Global keybindings for the application.
+    #[serde(default)]
+    pub shortcuts: ShortcutsSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShortcutsSettings {
+    #[serde(default = "default_shortcut_spotlight")]
+    pub spotlight: String,
+    #[serde(default = "default_shortcut_overlay_toggle")]
+    pub overlay_toggle: String,
+    #[serde(default = "default_shortcut_overlay_settings")]
+    pub overlay_settings: String,
+}
+
+impl Default for ShortcutsSettings {
+    fn default() -> Self {
+        Self {
+            spotlight: default_shortcut_spotlight(),
+            overlay_toggle: default_shortcut_overlay_toggle(),
+            overlay_settings: default_shortcut_overlay_settings(),
+        }
+    }
+}
+
+fn default_shortcut_spotlight() -> String {
+    "Control+Shift+Space".to_string()
+}
+fn default_shortcut_overlay_toggle() -> String {
+    "Control+Shift+KeyO".to_string()
+}
+fn default_shortcut_overlay_settings() -> String {
+    "Control+Shift+KeyM".to_string()
 }
 
 fn default_minimize_to_tray() -> bool {

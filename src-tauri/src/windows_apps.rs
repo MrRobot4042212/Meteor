@@ -91,6 +91,7 @@ fn from_entry(entry: &winreg::RegKey, key_name: &str) -> Option<Game> {
         launch_uri: None,
         favorite: false,
         categories: Vec::new(),
+
     })
 }
 
@@ -143,7 +144,8 @@ fn is_junk(name: &str, publisher: &str) -> bool {
         "steam", "epic games launcher", "gog galaxy", "ea app", "ea desktop",
         "origin", "ubisoft connect", "uplay", "battle.net", "riot client",
         "rockstar games launcher", "amazon games", "discord", "overwolf",
-        "playnite", "geforce now", "meteor","blender","7-zip"
+        "playnite", "geforce now", "meteor","blender","7-zip","microsoft visual c++",
+        "wallpaper engine","youtube"
     ];
     if NAME_BLOCK.iter().any(|b| n.contains(b)) {
         return true;
@@ -281,3 +283,4 @@ fn find_launch_exe(dir: &str) -> Option<String> {
 pub fn scan() -> Result<Vec<Game>, String> {
     Ok(Vec::new())
 }
+

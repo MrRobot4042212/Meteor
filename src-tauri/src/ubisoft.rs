@@ -46,6 +46,7 @@ pub fn scan() -> Result<Vec<Game>, String> {
             launch_uri: Some(format!("uplay://launch/{id}/0")),
             favorite: false,
             categories: Vec::new(),
+
         });
     }
 
@@ -56,3 +57,4 @@ pub fn scan() -> Result<Vec<Game>, String> {
 pub fn scan() -> Result<Vec<Game>, String> {
     Ok(Vec::new())
 }
+

@@ -115,10 +115,17 @@ export interface OverlaySettings {
   font_size: string;
 }
 
+export interface ShortcutsSettings {
+  spotlight: string;
+  overlay_toggle: string;
+  overlay_settings: string;
+}
+
 export interface AppSettings {
   setup_completed: boolean;
   minimize_to_tray: boolean;
   overlay: OverlaySettings;
+  shortcuts: ShortcutsSettings;
 }
 
 /** A GPU as reported by `system_info`. `key` is set only for metric-capable GPUs. */

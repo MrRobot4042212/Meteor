@@ -89,8 +89,10 @@ pub fn scan() -> Result<Vec<Game>, String> {
             )),
             favorite: false,
             categories: Vec::new(),
+
         });
     }
 
     Ok(games)
 }
+

@@ -59,9 +59,11 @@ pub fn scan() -> Result<Vec<Game>, String> {
                 launch_uri: None,
                 favorite: false,
                 categories: Vec::new(),
+
             });
         }
     }
 
     Ok(games)
 }
+

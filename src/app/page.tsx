@@ -344,6 +344,15 @@ function MainApp() {
     window.setTimeout(() => setToast(null), 2500);
   }
 
+  // Notificación de mando conectado
+  useEffect(() => {
+    const onConnect = (e: GamepadEvent) => {
+      flash(`Mando conectado: ${e.gamepad.id}`);
+    };
+    window.addEventListener('gamepadconnected', onConnect);
+    return () => window.removeEventListener('gamepadconnected', onConnect);
+  }, []);
+
   // Re-scan from scratch, showing the splash again (reset any earlier skip).
   function handleRescan() {
     setSplashDone(false);

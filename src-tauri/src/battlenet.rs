@@ -60,6 +60,7 @@ pub fn scan() -> Result<Vec<Game>, String> {
             launch_uri: Some(format!("battlenet://{code}")),
             favorite: false,
             categories: Vec::new(),
+
         });
     }
 
@@ -108,3 +109,4 @@ fn find_wow_root() -> Option<std::path::PathBuf> {
 pub fn scan() -> Result<Vec<Game>, String> {
     Ok(Vec::new())
 }
+

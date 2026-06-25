@@ -93,6 +93,7 @@ ConvertTo-Json -Compress -InputObject @($out)
                 launch_uri: Some(format!("shell:appsFolder\\{aumid}")),
                 favorite: false,
                 categories: Vec::new(),
+
             })
         })
         .collect()
@@ -148,6 +149,7 @@ fn scan_folders() -> Vec<Game> {
                 launch_uri: None,
                 favorite: false,
                 categories: Vec::new(),
+
             });
         }
     }
@@ -184,3 +186,4 @@ fn attr(xml: &str, key: &str) -> Option<String> {
     let value = rest[..end].trim();
     (!value.is_empty()).then(|| value.to_string())
 }
+

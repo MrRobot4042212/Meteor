@@ -211,8 +211,21 @@ fn displays() -> Vec<DisplayInfo> {
         if !got.as_bool() {
             continue;
         }
+        let mut name = wide_to_string(&dev.DeviceString);
+        let mut mon = DISPLAY_DEVICEW {
+            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
+        let ok_mon = unsafe { EnumDisplayDevicesW(PCWSTR::from_raw(dev.DeviceName.as_ptr()), 0, &mut mon, 0) };
+        if ok_mon.as_bool() {
+            let mon_name = wide_to_string(&mon.DeviceString);
+            if !mon_name.is_empty() {
+                name = mon_name;
+            }
+        }
+
         out.push(DisplayInfo {
-            name: wide_to_string(&dev.DeviceString),
+            name,
             width: mode.dmPelsWidth,
             height: mode.dmPelsHeight,
             refresh_hz: mode.dmDisplayFrequency,

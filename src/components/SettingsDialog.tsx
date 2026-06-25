@@ -15,7 +15,7 @@ import {
   isElevated,
   restartAsAdmin,
 } from '@/lib/tauri';
-import type { OverlaySettings, OverlayPosition, SystemInfo, MetricsSample } from '@/lib/types';
+import type { OverlaySettings, OverlayPosition, SystemInfo, MetricsSample, ShortcutsSettings } from '@/lib/types';
 import { CloseIcon, InfoIcon, GearIcon, FireIcon } from './icons';
 import { OverlayPanel, OVERLAY_CORNER } from './Overlay';
 
@@ -84,6 +84,7 @@ export function SettingsDialog({
   const [autostart, setAutostartState] = useState<boolean | null>(null);
   const [tray, setTray] = useState<boolean | null>(null);
   const [overlay, setOverlay] = useState<OverlaySettings | null>(null);
+  const [shortcuts, setShortcuts] = useState<ShortcutsSettings | null>(null);
   const [sys, setSys] = useState<SystemInfo | null>(null);
   const [elevated, setElevated] = useState<boolean | null>(null);
   const [tab, setTab] = useState<Tab>('system');
@@ -111,6 +112,7 @@ export function SettingsDialog({
       .then((s) => {
         setTray(s.minimize_to_tray);
         setOverlay(s.overlay);
+        setShortcuts(s.shortcuts);
       })
       .catch(() => setTray(null));
   }, []);
@@ -126,14 +128,26 @@ export function SettingsDialog({
 
   // Patch the overlay config: optimistic local update, then persist (merging onto
   // the freshest settings so we don't clobber other fields like minimize_to_tray).
-  async function updateOverlay(patch: Partial<OverlaySettings>) {
-    setOverlay((prev) => (prev ? { ...prev, ...patch } : prev));
-    try {
-      const current = await getAppSettings();
-      await setAppSettings({ ...current, overlay: { ...current.overlay, ...patch } });
-    } catch (e) {
-      setError(String(e));
-    }
+  function updateOverlay(patch: Partial<OverlaySettings>) {
+    setOverlay((prev) => {
+      if (!prev) return prev;
+      const nextOverlay = { ...prev, ...patch };
+      getAppSettings()
+        .then((current) => setAppSettings({ ...current, overlay: nextOverlay }))
+        .catch((e) => setError(String(e)));
+      return nextOverlay;
+    });
+  }
+
+  function updateShortcuts(patch: Partial<ShortcutsSettings>) {
+    setShortcuts((prev) => {
+      if (!prev) return prev;
+      const nextShortcuts = { ...prev, ...patch };
+      getAppSettings()
+        .then((current) => setAppSettings({ ...current, shortcuts: nextShortcuts }))
+        .catch((e) => setError(String(e)));
+      return nextShortcuts;
+    });
   }
 
   async function toggleAutostart() {
@@ -270,6 +284,8 @@ export function SettingsDialog({
                 hidden={hidden}
                 autostart={autostart}
                 tray={tray}
+                shortcuts={shortcuts}
+                updateShortcuts={updateShortcuts}
                 discordId={discordId}
                 discordSaved={discordSaved}
                 setDiscordId={setDiscordId}
@@ -593,6 +609,8 @@ function AppTab({
   hidden,
   autostart,
   tray,
+  shortcuts,
+  updateShortcuts,
   discordId,
   discordSaved,
   setDiscordId,
@@ -606,6 +624,8 @@ function AppTab({
   hidden: number | null;
   autostart: boolean | null;
   tray: boolean | null;
+  shortcuts: ShortcutsSettings | null;
+  updateShortcuts: (patch: Partial<ShortcutsSettings>) => void;
   discordId: string;
   discordSaved: boolean;
   setDiscordId: (v: string) => void;
@@ -643,6 +663,31 @@ function AppTab({
             Restaurar ocultos
           </Button>
         </Card>
+
+        {shortcuts && (
+          <Card title="Atajos de teclado globales">
+            <p className="mb-4 text-xs leading-relaxed text-muted">
+              Estos atajos funcionan en cualquier momento, incluso si estás jugando o navegando por otras aplicaciones. Haz clic en uno para cambiarlo.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <p className="mb-1 text-xs font-medium text-ink">Abrir Spotlight</p>
+                <p className="mb-2 text-[11px] text-muted">Abre el buscador flotante para lanzar juegos rápidamente.</p>
+                <ShortcutInput value={shortcuts.spotlight} onChange={(v) => updateShortcuts({ spotlight: v })} />
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-medium text-ink">Alternar Overlay de Métricas</p>
+                <p className="mb-2 text-[11px] text-muted">Muestra u oculta las estadísticas de rendimiento mientras juegas.</p>
+                <ShortcutInput value={shortcuts.overlay_toggle} onChange={(v) => updateShortcuts({ overlay_toggle: v })} />
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-medium text-ink">Ajustes del Overlay</p>
+                <p className="mb-2 text-[11px] text-muted">Abre el panel rápido para configurar qué métricas se muestran en pantalla.</p>
+                <ShortcutInput value={shortcuts.overlay_settings} onChange={(v) => updateShortcuts({ overlay_settings: v })} />
+              </div>
+            </div>
+          </Card>
+        )}
 
         {autostart !== null && (
           <Card
@@ -796,6 +841,54 @@ function SegmentedControl<T extends string | number>({
         </button>
       ))}
     </div>
+  );
+}
+
+/** A button that captures a keyboard shortcut combination. */
+function ShortcutInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [recording, setRecording] = useState(false);
+
+  useEffect(() => {
+    if (!recording) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const keys = [];
+      if (e.ctrlKey) keys.push('CommandOrControl');
+      if (e.shiftKey) keys.push('Shift');
+      if (e.altKey) keys.push('Alt');
+      if (e.metaKey) keys.push('Super');
+
+      if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
+        let key = e.code;
+        if (key.startsWith('Key')) key = key.slice(3);
+        else if (key.startsWith('Digit')) key = key.slice(5);
+        else if (key === 'Space') key = 'Space';
+        else key = e.key.toUpperCase();
+        
+        keys.push(key);
+        onChange(keys.join('+'));
+        setRecording(false);
+      } else if (e.key === 'Escape' && keys.length === 0) {
+        setRecording(false);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+  }, [recording, onChange]);
+
+  return (
+    <button
+      onClick={() => setRecording(true)}
+      className={`w-full border px-3 py-2 text-sm text-left transition ${
+        recording ? 'border-accent bg-accent/10 text-ink' : 'border-line bg-elevated text-muted hover:text-ink'
+      }`}
+    >
+      {recording ? 'Presiona la combinación de teclas...' : value}
+    </button>
   );
 }
 

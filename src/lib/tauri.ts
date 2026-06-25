@@ -136,3 +136,7 @@ export const isElevated = () => invoke<boolean>('is_elevated');
 
 /** Relaunch Meteor as administrator (UAC), then the current instance exits. */
 export const restartAsAdmin = () => invoke<void>('restart_as_admin');
+
+/** Make the overlay window interactive (receives mouse clicks) or click-through. */
+export const setOverlayInteractive = (interactive: boolean) =>
+  invoke<void>('set_overlay_interactive', { interactive });
