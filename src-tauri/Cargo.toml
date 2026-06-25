@@ -1,6 +1,6 @@
 [package]
 name = "meteor"
-version = "1.0.4"
+version = "0.0.5"
 description = "Meteor - biblioteca unificada de juegos y apps"
 authors = ["Alfonso"]
 edition = "2021"
