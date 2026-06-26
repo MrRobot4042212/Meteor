@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { CloseIcon } from './icons';
 
 /** A themed confirmation modal for destructive actions (hide / remove / delete).
@@ -8,7 +9,7 @@ import { CloseIcon } from './icons';
 export function ConfirmDialog({
   title,
   message,
-  confirmLabel = 'Confirmar',
+  confirmLabel,
   danger = true,
   onConfirm,
   onClose,
@@ -20,6 +21,7 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -58,7 +60,7 @@ export function ConfirmDialog({
             onClick={onClose}
             className="px-4 py-2 text-sm text-muted hover:text-ink"
           >
-            Cancelar
+            {t('common.cancel')}
           </button>
           <button
             autoFocus
@@ -72,7 +74,7 @@ export function ConfirmDialog({
                 : 'bg-accent text-white hover:bg-accent-soft'
             }`}
           >
-            {confirmLabel}
+            {confirmLabel ?? t('common.confirm')}
           </button>
         </div>
       </div>

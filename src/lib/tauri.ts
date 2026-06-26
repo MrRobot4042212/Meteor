@@ -82,9 +82,10 @@ export const removeCategory = (name: string) =>
 export const setCategoryOrder = (names: string[]) =>
   invoke<void>('set_category_order', { names });
 
-/** Rich IGDB metadata for a game name (detail page). Null if no match. */
-export const gameDetails = (name: string) =>
-  invoke<GameDetails | null>('game_details', { name });
+/** Rich IGDB metadata for a game name (detail page). Null if no match. `lang` is
+ *  the UI language so the summary comes back translated to it. */
+export const gameDetails = (name: string, lang: string) =>
+  invoke<GameDetails | null>('game_details', { name, lang });
 
 /** Accumulated play stats (seconds + last played) for a game id. */
 export const getPlaytime = (id: string) => invoke<PlayStat>('get_playtime', { id });
@@ -130,6 +131,9 @@ export const setAppSettings = (settings: AppSettings) =>
 
 /** Hardware/system info for the "Mi equipo" settings panel. */
 export const systemInfo = () => invoke<SystemInfo>('system_info');
+
+/** The OS user's display/full name (or login name) for the Home greeting. */
+export const username = () => invoke<string>('username');
 
 /** Whether Meteor runs elevated (admin) — needed for CPU temp / NVIDIA FPS. */
 export const isElevated = () => invoke<boolean>('is_elevated');

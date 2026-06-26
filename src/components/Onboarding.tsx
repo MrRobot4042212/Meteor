@@ -1,32 +1,21 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getAutostart, setAutostart, getAppSettings, setAppSettings } from '@/lib/tauri';
-
-const SLIDES = [
-  {
-    title: 'Bienvenido a Meteor',
-    description: 'Tu nueva central unificada de juegos. Hemos analizado tu PC y organizado tus títulos de Steam, Epic, GOG, y aplicaciones de Windows en un solo lugar.',
-  },
-  {
-    title: 'Búsqueda Global Ultrarrápida',
-    description: 'Presiona la combinación Ctrl+Shift+Espacio desde cualquier parte (incluso si Meteor está minimizado) para buscar e iniciar tus juegos al instante mediante el Spotlight.',
-  },
-  {
-    title: 'Personalización Total',
-    description: 'Haz clic derecho en cualquier juego para ver opciones ocultas. Puedes cambiar carátulas fácilmente arrastrando una imagen desde tu equipo sobre la ventana del juego.',
-  },
-  {
-    title: 'Comportamiento en Segundo Plano',
-    description: 'Meteor funciona mejor si se queda en la bandeja del sistema, registrando tus horas de juego y sincronizando con Discord Rich Presence.',
-  }
-];
 
 export function Onboarding({
   onComplete,
 }: {
   onComplete: () => void;
 }) {
+  const { t } = useTranslation();
+  const SLIDES = [
+    { title: t('onboarding.welcomeTitle'), description: t('onboarding.welcomeBody') },
+    { title: t('onboarding.spotlightTitle'), description: t('onboarding.spotlightBody') },
+    { title: t('onboarding.customizeTitle'), description: t('onboarding.customizeBody') },
+    { title: t('onboarding.backgroundTitle'), description: t('onboarding.backgroundBody') },
+  ];
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,9 +89,9 @@ export function Onboarding({
         <div className={`space-y-4 mb-10 transition-opacity duration-300 ${isLast ? 'opacity-100' : 'opacity-0 pointer-events-none absolute w-full'}`}>
           <label className="flex items-center justify-between cursor-pointer rounded-xl border border-line bg-surface p-5 transition hover:border-accent/40">
             <div>
-              <p className="text-sm font-semibold text-ink mb-1">Iniciar con Windows</p>
+              <p className="text-sm font-semibold text-ink mb-1">{t('onboarding.autostart')}</p>
               <p className="text-xs text-muted pr-8">
-                Arranca automáticamente en segundo plano para registrar el tiempo de juego.
+                {t('onboarding.autostartDesc')}
               </p>
             </div>
             <div
@@ -128,9 +117,9 @@ export function Onboarding({
 
           <label className="flex items-center justify-between cursor-pointer rounded-xl border border-line bg-surface p-5 transition hover:border-accent/40">
             <div>
-              <p className="text-sm font-semibold text-ink mb-1">Minimizar a la bandeja al cerrar</p>
+              <p className="text-sm font-semibold text-ink mb-1">{t('onboarding.tray')}</p>
               <p className="text-xs text-muted pr-8">
-                Al cerrar la ventana con la "X", Meteor seguirá funcionando en el área de notificaciones.
+                {t('onboarding.trayDesc')}
               </p>
             </div>
             <div
@@ -156,10 +145,9 @@ export function Onboarding({
 
           <label className="flex items-center justify-between cursor-pointer rounded-xl border border-line bg-surface p-5 transition hover:border-accent/40">
             <div>
-              <p className="text-sm font-semibold text-ink mb-1">Overlay de métricas in-game</p>
+              <p className="text-sm font-semibold text-ink mb-1">{t('onboarding.metrics')}</p>
               <p className="text-xs text-muted pr-8">
-                Muestra FPS, GPU/CPU, temperaturas y memoria sobre el juego. Puedes ajustarlo
-                luego en Ajustes (Ctrl+Shift+O). La temperatura de CPU requiere admin.
+                {t('onboarding.metricsDesc')}
               </p>
             </div>
             <div
@@ -184,10 +172,9 @@ export function Onboarding({
           </label>
 
           <div className="rounded-xl border border-line bg-surface p-5">
-            <p className="text-sm font-semibold text-ink mb-1">Escaneo de tu biblioteca</p>
+            <p className="text-sm font-semibold text-ink mb-1">{t('onboarding.scanTitle')}</p>
             <p className="text-xs text-muted">
-              Al pulsar «Escanear», Meteor analizará tu equipo en busca de juegos y
-              aplicaciones y descargará sus carátulas. Puede tardar unos segundos.
+              {t('onboarding.scanDesc')}
             </p>
           </div>
         </div>
@@ -211,7 +198,7 @@ export function Onboarding({
           disabled={busy}
           className="w-full rounded-xl bg-accent py-4 text-base font-semibold text-white transition hover:bg-accent-soft shadow-[0_0_20px_rgba(223,79,79,0.2)] disabled:opacity-50"
         >
-          {busy ? 'Preparando…' : isLast ? 'Escanear mi biblioteca' : 'Siguiente'}
+          {busy ? t('onboarding.preparing') : isLast ? t('onboarding.scanLibrary') : t('onboarding.next')}
         </button>
       </div>
     </div>

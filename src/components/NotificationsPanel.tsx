@@ -1,35 +1,33 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { CloseIcon, BookIcon } from './icons';
 import { getAppSettings, setAppSettings } from '@/lib/tauri';
+import { formatShortcut } from '@/lib/shortcuts';
 interface Tutorial {
   title: string;
   description: string;
 }
 
-const TUTORIALS: Tutorial[] = [
-  {
-    title: '¡Bienvenido a Meteor!',
-    description: 'Meteor es una biblioteca unificada de juegos. Hemos analizado tu PC y añadido automáticamente los juegos de tus plataformas (Steam, Epic, GOG, etc.).',
-  },
-  {
-    title: 'Búsqueda Global (Spotlight)',
-    description: 'Presiona Ctrl+Shift+Espacio en cualquier momento (incluso con Meteor cerrado) para buscar e iniciar juegos al instante.',
-  },
-  {
-    title: 'Añadir o cambiar carátulas',
-    description: 'Si una carátula falta o no te gusta, haz clic derecho sobre el juego -> "Cambiar carátula". También puedes arrastrar una imagen desde tu PC sobre esa ventana.',
-  },
-  {
-    title: 'Añadir aplicaciones manuales',
-    description: 'Si tienes un juego o aplicación independiente (ej: emuladores o instaladores standalone), puedes usar el botón "Añadir" en la esquina superior.',
-  },
-];
-
 export function NotificationsPanel({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Reflect the user's real Spotlight binding (custom or our default).
+  const [spotlight, setSpotlight] = useState('F9');
+  useEffect(() => {
+    getAppSettings()
+      .then((s) => s.shortcuts?.spotlight && setSpotlight(formatShortcut(s.shortcuts.spotlight).join('+')))
+      .catch(() => {});
+  }, []);
+
+  const tutorials: Tutorial[] = [
+    { title: t('notifications.welcomeTitle'), description: t('notifications.welcomeBody') },
+    { title: t('notifications.spotlightTitle'), description: t('notifications.spotlightBody', { shortcut: spotlight }) },
+    { title: t('notifications.coversTitle'), description: t('notifications.coversBody') },
+    { title: t('notifications.manualTitle'), description: t('notifications.manualBody') },
+  ];
 
   async function resetOnboarding() {
     setBusy(true);
@@ -54,7 +52,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
           <div className="flex items-center gap-2">
             <BookIcon className="h-5 w-5 text-accent" />
-            <h2 className="font-display text-base font-semibold text-ink">Información y Guías</h2>
+            <h2 className="font-display text-base font-semibold text-ink">{t('notifications.title')}</h2>
           </div>
           <button
             onClick={onClose}
@@ -65,7 +63,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
-          {TUTORIALS.map((tut, i) => (
+          {tutorials.map((tut, i) => (
             <div key={i} className="relative rounded-xl border border-line bg-elevated p-4">
               <div className="mb-1.5 flex items-center gap-2">
                 <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent/20 text-[11px] font-bold text-accent">
@@ -81,7 +79,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
 
           <div className="mt-4 rounded-lg bg-accent/10 p-4 border border-accent/20">
             <p className="text-xs text-accent">
-              ¿No encuentras algo? Haz clic derecho sobre cualquier juego o categoría para descubrir acciones ocultas.
+              {t('notifications.hintHidden')}
             </p>
           </div>
 
@@ -91,7 +89,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
               disabled={busy}
               className="w-full rounded-lg border border-line bg-elevated px-4 py-2.5 text-sm font-medium text-ink transition hover:border-accent/40 disabled:opacity-50"
             >
-              Repetir configuración inicial
+              {t('notifications.redoOnboarding')}
             </button>
             {error && <p className="mt-2 text-center text-xs text-accent">{error}</p>}
           </div>

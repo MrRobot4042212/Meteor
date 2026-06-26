@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Game } from '@/lib/types';
 import { SOURCE_META } from '@/lib/sources';
 import { coverSrc } from '@/lib/cover';
@@ -53,6 +54,7 @@ export const GameCard = memo(function GameCard({
   /** Position in the grid, for the staggered entrance animation delay. */
   index?: number;
 }) {
+  const { t } = useTranslation();
   // For apps without a cover, show the real icon extracted from the exe (centered
   // on a tile). A manual cover override still wins over it.
   const logo = game.cover_url ? null : game.icon ? coverSrc(game.icon) ?? null : null;
@@ -143,6 +145,7 @@ export const GameCard = memo(function GameCard({
     >
     <div
       ref={ref}
+      data-tour="game-card"
       draggable={!selectionMode}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
@@ -247,7 +250,7 @@ export const GameCard = memo(function GameCard({
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-soft"
           >
             <PlayIcon className="h-4 w-4" />
-            Jugar
+            {t('card.play')}
           </button>
         </div>
       </div>
@@ -259,7 +262,7 @@ export const GameCard = memo(function GameCard({
             e.stopPropagation();
             onToggleFavorite(game);
           }}
-          title={game.favorite ? 'Quitar de favoritos' : 'Marcar como favorito'}
+          title={game.favorite ? t('card.removeFavorite') : t('card.addFavorite')}
           className={`pointer-events-auto absolute left-2 top-2 grid h-8 w-8 place-items-center rounded-lg bg-void/70 backdrop-blur transition ${
             game.favorite
               ? 'text-ink opacity-100'
@@ -282,7 +285,7 @@ export const GameCard = memo(function GameCard({
               e.stopPropagation();
               onEditCategories(game);
             }}
-            title="Categorías"
+            title={t('card.categories')}
             className="pointer-events-auto grid h-8 w-8 place-items-center rounded-lg bg-void/70 text-muted backdrop-blur transition hover:text-accent"
           >
             <TagIcon className="h-4 w-4" />
@@ -294,7 +297,7 @@ export const GameCard = memo(function GameCard({
               e.stopPropagation();
               onEditCover(game);
             }}
-            title="Cambiar carátula"
+            title={t('card.changeCover')}
             className="pointer-events-auto grid h-8 w-8 place-items-center rounded-lg bg-void/70 text-muted backdrop-blur transition hover:text-accent"
           >
             <ImageIcon className="h-4 w-4" />
@@ -306,7 +309,7 @@ export const GameCard = memo(function GameCard({
               e.stopPropagation();
               onHide(game);
             }}
-            title="Ocultar de la biblioteca"
+            title={t('card.hideFromLibrary')}
             className="pointer-events-auto grid h-8 w-8 place-items-center rounded-lg bg-void/70 text-muted backdrop-blur transition hover:text-accent"
           >
             <EyeOffIcon className="h-4 w-4" />
@@ -318,7 +321,7 @@ export const GameCard = memo(function GameCard({
               e.stopPropagation();
               onRemove(game);
             }}
-            title="Quitar de la biblioteca"
+            title={t('card.removeFromLibrary')}
             className="pointer-events-auto grid h-8 w-8 place-items-center rounded-lg bg-void/70 text-muted backdrop-blur transition hover:text-accent"
           >
             <TrashIcon className="h-4 w-4" />

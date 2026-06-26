@@ -91,6 +91,13 @@ pub struct AppSettings {
     /// Global keybindings for the application.
     #[serde(default)]
     pub shortcuts: ShortcutsSettings,
+    /// UI language: "system" (follow the OS, fallback English), "es" or "en".
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    "system".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,13 +121,13 @@ impl Default for ShortcutsSettings {
 }
 
 fn default_shortcut_spotlight() -> String {
-    "Control+Shift+Space".to_string()
+    "F9".to_string()
 }
 fn default_shortcut_overlay_toggle() -> String {
-    "Control+Shift+KeyO".to_string()
+    "F10".to_string()
 }
 fn default_shortcut_overlay_settings() -> String {
-    "Control+Shift+KeyM".to_string()
+    "F11".to_string()
 }
 
 fn default_minimize_to_tray() -> bool {

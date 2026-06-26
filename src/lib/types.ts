@@ -126,6 +126,8 @@ export interface AppSettings {
   minimize_to_tray: boolean;
   overlay: OverlaySettings;
   shortcuts: ShortcutsSettings;
+  /** UI language: "system" (follow OS, fallback English), "es" or "en". */
+  language: string;
 }
 
 /** A GPU as reported by `system_info`. `key` is set only for metric-capable GPUs. */

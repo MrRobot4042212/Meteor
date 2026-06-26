@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { useTranslation, Trans } from 'react-i18next';
 import { setCover, setCoverImage } from '@/lib/tauri';
 import { coverSrc } from '@/lib/cover';
 import type { Game } from '@/lib/types';
@@ -19,6 +20,7 @@ export function CoverDialog({
   onSaved: (id: string, url: string | null) => void;
 }) {
   // Prefill only manual (remote) overrides; a local cached path isn't editable text.
+  const { t } = useTranslation();
   const isRemote = /^https?:\/\//i.test(game.cover_url ?? '');
   const [url, setUrl] = useState(isRemote ? (game.cover_url as string) : '');
   const [busy, setBusy] = useState(false);
@@ -46,7 +48,7 @@ export function CoverDialog({
   // Save a local image file (dropped or picked) as the cover.
   async function handleFile(file: File) {
     if (!file.type.startsWith('image/')) {
-      setError('El archivo no es una imagen.');
+      setError(t('dialog.notImage'));
       return;
     }
     setBusy(true);
@@ -75,7 +77,7 @@ export function CoverDialog({
       >
         <div className="mb-5 flex items-center justify-between">
           <h2 className="line-clamp-1 font-display text-lg font-semibold text-ink">
-            Carátula · {game.name}
+            {t('dialog.coverTitle', { name: game.name })}
           </h2>
           <button
             onClick={onClose}
@@ -98,7 +100,7 @@ export function CoverDialog({
           </div>
           <div className="min-w-0 flex-1">
             <label className="mb-1.5 block text-xs font-medium text-muted">
-              URL de la imagen
+              {t('dialog.imageUrl')}
             </label>
             <input
               value={url}
@@ -106,10 +108,7 @@ export function CoverDialog({
               placeholder="https://…/cover.jpg"
               className="w-full border border-line bg-elevated px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted/60 focus:border-accent/60"
             />
-            <p className="mt-2 text-xs leading-relaxed text-muted">
-              Pega un enlace o arrastra una imagen abajo. Vacía el campo y pulsa
-              «Restablecer» para volver a la carátula automática.
-            </p>
+            <p className="mt-2 text-xs leading-relaxed text-muted">{t('dialog.coverHelp')}</p>
           </div>
         </div>
 
@@ -135,7 +134,7 @@ export function CoverDialog({
         >
           <ImageIcon className="h-6 w-6" />
           <span className="text-sm">
-            Arrastra una imagen aquí o <span className="text-ink underline">elige un archivo</span>
+            <Trans i18nKey="dialog.dropImage" components={[<span key="0" className="text-ink underline" />]} />
           </span>
           <span className="text-xs text-muted/70">PNG, JPG, WEBP, GIF</span>
           <input
@@ -159,21 +158,21 @@ export function CoverDialog({
             disabled={busy}
             className="px-3 py-2 text-sm text-muted hover:text-ink disabled:opacity-50"
           >
-            Restablecer
+            {t('dialog.reset')}
           </button>
           <div className="flex gap-2">
             <button
               onClick={onClose}
               className="px-4 py-2 text-sm text-muted hover:text-ink"
             >
-              Cancelar
+              {t('common.cancel')}
             </button>
             <button
               onClick={() => commit(url.trim() || null)}
               disabled={busy}
               className="bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-soft disabled:opacity-50"
             >
-              {busy ? 'Guardando…' : 'Guardar'}
+              {busy ? t('dialog.saving') : t('common.save')}
             </button>
           </div>
         </div>

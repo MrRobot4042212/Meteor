@@ -59,3 +59,60 @@ pub fn relaunch_elevated() -> Result<(), String> {
         Err("No se pudo reiniciar como administrador (UAC cancelado).".into())
     }
 }
+
+/// Name of the Task Scheduler entry used to autostart Meteor elevated.
+const AUTOSTART_TASK: &str = "MeteorAutostart";
+
+/// Run `schtasks` without flashing a console window, returning whether it
+/// exited successfully.
+fn schtasks(args: &[&str]) -> std::io::Result<bool> {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW so the console of schtasks.exe never flashes.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let status = std::process::Command::new("schtasks")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    Ok(status.success())
+}
+
+/// Whether the elevated logon autostart task exists.
+pub fn logon_task_exists() -> bool {
+    schtasks(&["/Query", "/TN", AUTOSTART_TASK]).unwrap_or(false)
+}
+
+/// Create (or overwrite) a Task Scheduler entry that launches Meteor at logon
+/// with highest privileges. This is the only way Windows will autostart an app
+/// that requires elevation (UAC) without a prompt at every login — a plain
+/// `HKCU\...\Run` entry is silently blocked for elevated apps. Requires the
+/// current process to be elevated (creating a `/RL HIGHEST` task needs admin).
+pub fn create_logon_task() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // schtasks parses its own /TR value, so wrap the path in quotes for spaces.
+    let tr = format!("\"{}\"", exe.display());
+    let ok = schtasks(&[
+        "/Create", "/TN", AUTOSTART_TASK, "/TR", &tr, "/SC", "ONLOGON", "/RL",
+        "HIGHEST", "/F",
+    ])
+    .map_err(|e| e.to_string())?;
+    if ok {
+        Ok(())
+    } else {
+        Err("No se pudo crear la tarea de inicio automático (schtasks).".into())
+    }
+}
+
+/// Remove the elevated logon autostart task. No-op (Ok) if it doesn't exist.
+pub fn delete_logon_task() -> Result<(), String> {
+    if !logon_task_exists() {
+        return Ok(());
+    }
+    let ok = schtasks(&["/Delete", "/TN", AUTOSTART_TASK, "/F"]).map_err(|e| e.to_string())?;
+    if ok {
+        Ok(())
+    } else {
+        Err("No se pudo borrar la tarea de inicio automático (schtasks).".into())
+    }
+}

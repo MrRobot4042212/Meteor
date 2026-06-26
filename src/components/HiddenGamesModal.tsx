@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getHiddenLibrary, unhideGame } from '@/lib/tauri';
 import type { Game } from '@/lib/types';
 import { CloseIcon, EyeOffIcon } from './icons';
@@ -12,6 +13,7 @@ export function HiddenGamesModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const { t } = useTranslation();
   const [games, setGames] = useState<Game[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -46,7 +48,7 @@ export function HiddenGamesModal({
         <div className="mb-5 flex shrink-0 items-center justify-between">
           <div className="flex items-center gap-2 text-ink">
             <EyeOffIcon className="h-5 w-5" />
-            <h2 className="font-display text-lg font-semibold">Elementos ocultos</h2>
+            <h2 className="font-display text-lg font-semibold">{t('sidebar.hiddenItems')}</h2>
           </div>
           <button
             onClick={onClose}
@@ -58,7 +60,7 @@ export function HiddenGamesModal({
 
         <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
           {games.length === 0 ? (
-            <p className="text-sm leading-relaxed text-muted">No tienes ningún elemento oculto.</p>
+            <p className="text-sm leading-relaxed text-muted">{t('dialog.noHidden')}</p>
           ) : (
             <ul className="flex flex-col gap-2">
               {games.map((game) => (
@@ -72,7 +74,7 @@ export function HiddenGamesModal({
                     disabled={busy}
                     className="shrink-0 border border-line bg-surface px-3 py-1.5 text-[11px] font-medium text-ink transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
                   >
-                    Restaurar
+                    {t('dialog.restore')}
                   </button>
                 </li>
               ))}

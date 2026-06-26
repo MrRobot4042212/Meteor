@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { setCategories } from '@/lib/tauri';
 import type { Game } from '@/lib/types';
 import { CloseIcon, PlusIcon } from './icons';
@@ -19,6 +20,7 @@ export function CategoryDialog({
   onClose: () => void;
   onSaved: (id: string, categories: string[]) => void;
 }) {
+  const { t } = useTranslation();
   const [selected, setSelected] = useState<string[]>(game.categories ?? []);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -74,7 +76,7 @@ export function CategoryDialog({
       >
         <div className="mb-5 flex items-center justify-between">
           <h2 className="line-clamp-1 font-display text-lg font-semibold text-ink">
-            Categorías · {game.name}
+            {t('dialog.categoriesTitle', { name: game.name })}
           </h2>
           <button
             onClick={onClose}
@@ -103,7 +105,7 @@ export function CategoryDialog({
         )}
 
         <label className="mb-1.5 block text-xs font-medium text-muted">
-          Nueva categoría
+          {t('sidebar.newCategory')}
         </label>
         <div className="flex gap-2">
           <input
@@ -115,12 +117,12 @@ export function CategoryDialog({
                 addDraft();
               }
             }}
-            placeholder="p. ej. RPG, Cooperativo…"
+            placeholder={t('dialog.categoryPlaceholder')}
             className="w-full rounded-lg border border-line bg-elevated px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted/60 focus:border-accent/60"
           />
           <button
             onClick={addDraft}
-            title="Añadir categoría"
+            title={t('dialog.addCategory')}
             className="grid h-[42px] w-[42px] shrink-0 place-items-center rounded-lg border border-line text-muted transition hover:text-accent"
           >
             <PlusIcon className="h-[18px] w-[18px]" />
@@ -134,14 +136,14 @@ export function CategoryDialog({
             onClick={onClose}
             className="rounded-lg px-4 py-2 text-sm text-muted hover:text-ink"
           >
-            Cancelar
+            {t('common.cancel')}
           </button>
           <button
             onClick={commit}
             disabled={busy}
             className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-soft disabled:opacity-50"
           >
-            {busy ? 'Guardando…' : 'Guardar'}
+            {busy ? t('dialog.saving') : t('common.save')}
           </button>
         </div>
       </div>

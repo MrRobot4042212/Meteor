@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { MeteorIcon } from './icons';
 
 /** A brief intro splash that plays every time the app starts. */
 export function IntroSplash({ onFinish }: { onFinish: () => void }) {
+  const { t } = useTranslation();
   const [exiting, setExiting] = useState(false);
 
   useEffect(() => {
@@ -31,7 +33,7 @@ export function IntroSplash({ onFinish }: { onFinish: () => void }) {
           METEOR
         </h1>
         <p className="mt-4 font-display text-xs uppercase tracking-[0.4em] text-muted">
-          Biblioteca unificada
+          {t('app.tagline')}
         </p>
       </div>
     </div>

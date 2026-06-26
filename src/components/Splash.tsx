@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { MeteorIcon } from './icons';
 
 /** A few meteorites with varied lane, size, delay and speed for a shower effect. */
@@ -26,18 +27,19 @@ export function Splash({
   /** When true, fade out (the parent keeps us mounted until the fade finishes). */
   exiting?: boolean;
 }) {
+  const { t } = useTranslation();
   const [showSkip, setShowSkip] = useState(false);
 
   useEffect(() => {
-    const t = window.setTimeout(() => setShowSkip(true), 4000);
-    return () => window.clearTimeout(t);
+    const id = window.setTimeout(() => setShowSkip(true), 4000);
+    return () => window.clearTimeout(id);
   }, []);
 
   const indeterminate = progress.total === 0;
   const pct = indeterminate ? 0 : Math.round((progress.done / progress.total) * 100);
   const phase = indeterminate
-    ? 'Preparando biblioteca…'
-    : `Cargando carátulas · ${progress.done}/${progress.total}`;
+    ? t('splash.preparing')
+    : t('splash.loadingCovers', { done: progress.done, total: progress.total });
 
   return (
     <div
@@ -62,7 +64,7 @@ export function Splash({
           METEOR
         </h1>
         <p className="mt-1 font-display text-xs uppercase tracking-[0.3em] text-muted">
-          Biblioteca unificada
+          {t('app.tagline')}
         </p>
       </div>
 
@@ -87,7 +89,7 @@ export function Splash({
           showSkip ? 'opacity-100' : 'pointer-events-none opacity-0'
         }`}
       >
-        Entrar ahora →
+        {t('splash.enterNow')}
       </button>
     </div>
   );

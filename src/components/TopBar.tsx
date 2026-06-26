@@ -1,11 +1,13 @@
-import { SearchIcon, ScanIcon, PlayIcon, BellIcon } from './icons';
+import { useTranslation } from 'react-i18next';
+import { SearchIcon, ScanIcon, PlayIcon, BellIcon, HelpIcon } from './icons';
 
 export type SortKey = 'name' | 'recent' | 'played';
 
-export const SORT_LABELS: Record<SortKey, string> = {
-  name: 'Alfabético',
-  recent: 'Jugado Recientemente',
-  played: 'Tiempo de Juego',
+/** i18n key for each sort option's label. */
+export const SORT_LABEL_KEYS: Record<SortKey, string> = {
+  name: 'topbar.sortName',
+  recent: 'topbar.sortRecent',
+  played: 'topbar.sortPlayed',
 };
 
 export function TopBar({
@@ -18,6 +20,7 @@ export function TopBar({
   loading,
   setShowNotifications,
   setShowAdd,
+  onStartTour,
 }: {
   query: string;
   setQuery: (q: string) => void;
@@ -28,15 +31,18 @@ export function TopBar({
   loading: boolean;
   setShowNotifications: (s: boolean) => void;
   setShowAdd: (s: boolean) => void;
+  /** Re-launch the guided product tour. */
+  onStartTour: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="relative flex h-16 shrink-0 items-center justify-center border-b border-line px-6">
       {/* Search box centered */}
-      <div className="relative w-full max-w-xl transition-all duration-300">
+      <div data-tour="search" className="relative w-full max-w-xl transition-all duration-300">
         <SearchIcon className="absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-muted" />
         <input
           type="text"
-          placeholder="Buscar un juego o comando... (Ej. /scan, /add)"
+          placeholder={t('topbar.searchPlaceholder')}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           className="w-full rounded-xl border border-line bg-elevated/50 py-2.5 pl-10 pr-4 text-sm text-ink outline-none transition hover:border-accent/40 focus:border-accent focus:bg-surface focus:shadow-[0_0_15px_rgba(223,79,79,0.1)]"
@@ -48,8 +54,16 @@ export function TopBar({
       {/* Right side controls (Notifications and settings/actions) */}
       <div className="absolute right-6 flex items-center gap-2">
         <button
+          onClick={onStartTour}
+          title={t('topbar.tour')}
+          className="grid h-10 w-10 place-items-center rounded-lg text-muted transition hover:bg-elevated hover:text-accent"
+        >
+          <HelpIcon className="h-[18px] w-[18px]" />
+        </button>
+
+        <button
           onClick={() => setShowNotifications(true)}
-          title="Asistente y Notificaciones"
+          title={t('topbar.notifications')}
           className="group relative grid h-10 w-10 place-items-center text-muted transition hover:text-accent"
         >
           <BellIcon className="h-5 w-5" />
@@ -69,9 +83,9 @@ export function TopBar({
               backgroundSize: '1.25em 1.25em',
             }}
           >
-            {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
+            {(Object.keys(SORT_LABEL_KEYS) as SortKey[]).map((k) => (
               <option key={k} value={k} className="bg-surface text-ink">
-                {SORT_LABELS[k]}
+                {t(SORT_LABEL_KEYS[k])}
               </option>
             ))}
           </select>
@@ -80,14 +94,14 @@ export function TopBar({
         <button
           onClick={handleRescan}
           disabled={loading}
-          title="Escanear Plataformas"
+          title={t('topbar.scan')}
           className="grid h-10 w-10 place-items-center rounded-lg text-muted transition hover:bg-elevated hover:text-accent disabled:opacity-50"
         >
           <ScanIcon className={`h-[18px] w-[18px] ${loading ? 'animate-pulse' : ''}`} />
         </button>
         <button
           onClick={() => setShowAdd(true)}
-          title="Añadir Aplicación Manual"
+          title={t('topbar.addManual')}
           className="grid h-10 w-10 place-items-center rounded-lg text-muted transition hover:bg-elevated hover:text-accent"
         >
           <div className="relative">

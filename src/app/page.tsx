@@ -37,7 +37,9 @@ import { Home } from '@/components/Home';
 import { TopBar, type SortKey } from '@/components/TopBar';
 import { UpdatePrompt } from '@/components/UpdatePrompt';
 import { NotificationsPanel } from '@/components/NotificationsPanel';
+import { useTranslation } from 'react-i18next';
 import { Onboarding } from '@/components/Onboarding';
+import { GuidedTour } from '@/components/GuidedTour';
 import { Overlay } from '@/components/Overlay';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { SOURCE_ORDER } from '@/lib/sources';
@@ -90,6 +92,7 @@ export default function Root() {
 }
 
 function MainApp() {
+  const { t } = useTranslation();
   const [introDone, setIntroDone] = useState(false);
 
   // Onboarding gate: 'unknown' until settings load, then 'needed' (first run) or
@@ -149,6 +152,11 @@ function MainApp() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
+  // Guided product tour: shown once after the first scan, re-launchable from Ajustes.
+  const [showTour, setShowTour] = useState(false);
+  // True after onboarding finishes on a fresh install, so the tour fires as soon
+  // as the library has loaded (we wait for at least one game to anchor the steps).
+  const [tourPending, setTourPending] = useState(false);
 
   useEffect(() => {
     getAppSettings()
@@ -172,6 +180,15 @@ function MainApp() {
       return () => window.clearTimeout(t);
     }
   }, [splashActive, splashMounted]);
+
+  // Fire the guided tour after the first scan finishes: wait until the splash is
+  // gone and the library has settled, so the steps can anchor to a real card.
+  useEffect(() => {
+    if (tourPending && !booting && !splashMounted) {
+      setTourPending(false);
+      setShowTour(true);
+    }
+  }, [tourPending, booting, splashMounted]);
 
   // The game whose detail page is open (kept fresh from `games` by id).
   const selected = selectedId ? games.find((g) => g.id === selectedId) ?? null : null;
@@ -262,33 +279,33 @@ function MainApp() {
   // Items for the right-click context menu on a card.
   function menuItems(game: Game): MenuItem[] {
     const items: MenuItem[] = [
-      { label: 'Jugar', icon: <PlayIcon className="h-4 w-4" />, onClick: () => handleLaunch(game) },
+      { label: t('menu.play'), icon: <PlayIcon className="h-4 w-4" />, onClick: () => handleLaunch(game) },
       {
-        label: game.favorite ? 'Quitar de favoritos' : 'Marcar como favorito',
+        label: game.favorite ? t('menu.removeFavorite') : t('menu.addFavorite'),
         icon: <StarIcon className="h-4 w-4" fill={game.favorite ? 'currentColor' : 'none'} />,
         onClick: () => handleToggleFavorite(game),
       },
-      { label: 'Categorías…', icon: <TagIcon className="h-4 w-4" />, onClick: () => setEditingCategories(game) },
-      { label: 'Cambiar carátula…', icon: <ImageIcon className="h-4 w-4" />, onClick: () => setEditingCover(game) },
+      { label: t('menu.categories'), icon: <TagIcon className="h-4 w-4" />, onClick: () => setEditingCategories(game) },
+      { label: t('menu.changeCover'), icon: <ImageIcon className="h-4 w-4" />, onClick: () => setEditingCover(game) },
       game.source === 'app'
-        ? { label: 'Marcar como juego', icon: <GridIcon className="h-4 w-4" />, onClick: () => handleToggleType(game) }
-        : { label: 'Marcar como aplicación', icon: <AppIcon className="h-4 w-4" />, onClick: () => handleToggleType(game) },
+        ? { label: t('menu.markAsGame'), icon: <GridIcon className="h-4 w-4" />, onClick: () => handleToggleType(game) }
+        : { label: t('menu.markAsApp'), icon: <AppIcon className="h-4 w-4" />, onClick: () => handleToggleType(game) },
     ];
     const folder = folderOf(game);
     if (folder) {
       items.push({
-        label: 'Abrir carpeta',
+        label: t('menu.openFolder'),
         icon: <FolderIcon className="h-4 w-4" />,
         onClick: () => {
-          openPath(folder).catch(() => flash('No se pudo abrir la carpeta'));
+          openPath(folder).catch(() => flash(t('toast.folderOpenFailed')));
         },
       });
     }
     items.push({ type: 'separator' });
     if (game.source === 'manual') {
-      items.push({ label: 'Quitar', danger: true, icon: <TrashIcon className="h-4 w-4" />, onClick: () => handleRemove(game) });
+      items.push({ label: t('menu.remove'), danger: true, icon: <TrashIcon className="h-4 w-4" />, onClick: () => handleRemove(game) });
     } else {
-      items.push({ label: 'Ocultar', danger: true, icon: <EyeOffIcon className="h-4 w-4" />, onClick: () => handleHide(game) });
+      items.push({ label: t('menu.hide'), danger: true, icon: <EyeOffIcon className="h-4 w-4" />, onClick: () => handleHide(game) });
     }
     return items;
   }
@@ -297,13 +314,13 @@ function MainApp() {
   function categoryMenuItems(cat: Category): MenuItem[] {
     return [
       {
-        label: 'Editar…',
+        label: t('menu.edit'),
         icon: <PencilIcon className="h-4 w-4" />,
         onClick: () => setEditingCategory(cat),
       },
       { type: 'separator' },
       {
-        label: 'Eliminar',
+        label: t('menu.deleteCategory'),
         danger: true,
         icon: <TrashIcon className="h-4 w-4" />,
         onClick: () => handleDeleteCategory(cat),
@@ -347,7 +364,7 @@ function MainApp() {
   // Notificación de mando conectado
   useEffect(() => {
     const onConnect = (e: GamepadEvent) => {
-      flash(`Mando conectado: ${e.gamepad.id}`);
+      flash(t('toast.gamepadConnected', { id: e.gamepad.id }));
     };
     window.addEventListener('gamepadconnected', onConnect);
     return () => window.removeEventListener('gamepadconnected', onConnect);
@@ -362,9 +379,9 @@ function MainApp() {
   async function handleLaunch(game: Game) {
     try {
       await launchGame(game);
-      flash(`Iniciando ${game.name}…`);
+      flash(t('toast.launching', { name: game.name }));
     } catch (e) {
-      flash(`No se pudo iniciar: ${e}`);
+      flash(t('toast.launchFailed', { error: String(e) }));
     }
   }
 
@@ -374,20 +391,15 @@ function MainApp() {
       await setCategoryOrder(names);
       await refreshCategories();
     } catch {
-      flash('No se pudo reordenar las categorías');
+      flash(t('toast.reorderCategoriesFailed'));
     }
   }
 
   function handleDeleteCategory(cat: Category) {
     setConfirm({
-      title: 'Eliminar categoría',
-      message: (
-        <>
-          ¿Eliminar la categoría <span className="text-ink">«{cat.name}»</span>? Se quitará de
-          todos los juegos (los juegos no se borran).
-        </>
-      ),
-      confirmLabel: 'Eliminar',
+      title: t('confirm.deleteCategoryTitle'),
+      message: t('confirm.deleteCategoryBody', { name: cat.name }),
+      confirmLabel: t('common.delete'),
       onConfirm: () => doDeleteCategory(cat),
     });
   }
@@ -398,9 +410,9 @@ function MainApp() {
       if (filter === `cat:${cat.name}`) setFilter('all');
       await refreshCategories();
       refresh();
-      flash(`Categoría «${cat.name}» eliminada`);
+      flash(t('toast.categoryDeleted', { name: cat.name }));
     } catch {
-      flash('No se pudo eliminar la categoría');
+      flash(t('toast.categoryDeleteFailed'));
     }
   }
 
@@ -425,20 +437,15 @@ function MainApp() {
       prev.map((g) => (selectedIds.has(g.id) ? { ...g, favorite: value } : g)),
     );
     await Promise.allSettled(ids.map((id) => setFavorite(id, value)));
-    flash(value ? `${ids.length} en favoritos` : `${ids.length} quitados de favoritos`);
+    flash(value ? t('toast.favoritedCount', { count: ids.length }) : t('toast.unfavoritedCount', { count: ids.length }));
   }
 
   function bulkHide() {
     const count = selectedIds.size;
     setConfirm({
-      title: 'Ocultar selección',
-      message: (
-        <>
-          ¿Ocultar <span className="text-ink">{count}</span>{' '}
-          {count === 1 ? 'elemento' : 'elementos'}? Podrás restaurarlos desde Ajustes.
-        </>
-      ),
-      confirmLabel: 'Ocultar',
+      title: t('confirm.hideSelectionTitle'),
+      message: t('confirm.hideSelectionBody', { count }),
+      confirmLabel: t('common.hide'),
       onConfirm: doBulkHide,
     });
   }
@@ -449,7 +456,7 @@ function MainApp() {
     exitSelection();
     const res = await Promise.allSettled(ids.map((id) => hideGame(id)));
     if (res.some((r) => r.status === 'rejected')) refresh();
-    flash(`${ids.length} ${ids.length === 1 ? 'oculto' : 'ocultos'}`);
+    flash(t('toast.hiddenCount', { count: ids.length }));
   }
 
   async function bulkAddCategories(cats: string[]) {
@@ -476,18 +483,14 @@ function MainApp() {
         return setCategories(g.id, merged);
       }),
     );
-    flash(`Categorías añadidas a ${ids.length}`);
+    flash(t('toast.categoriesAddedTo', { count: ids.length }));
   }
 
   function handleRemove(game: Game) {
     setConfirm({
-      title: 'Quitar de la biblioteca',
-      message: (
-        <>
-          ¿Quitar <span className="text-ink">«{game.name}»</span> de la biblioteca?
-        </>
-      ),
-      confirmLabel: 'Quitar',
+      title: t('confirm.removeTitle'),
+      message: t('confirm.removeBody', { name: game.name }),
+      confirmLabel: t('common.remove'),
       onConfirm: () => doRemove(game),
     });
   }
@@ -504,14 +507,9 @@ function MainApp() {
 
   function handleHide(game: Game) {
     setConfirm({
-      title: 'Ocultar de la biblioteca',
-      message: (
-        <>
-          ¿Ocultar <span className="text-ink">«{game.name}»</span>? Podrás restaurarlo desde
-          Ajustes.
-        </>
-      ),
-      confirmLabel: 'Ocultar',
+      title: t('confirm.hideTitle'),
+      message: t('confirm.hideBody', { name: game.name }),
+      confirmLabel: t('common.hide'),
       onConfirm: () => doHide(game),
     });
   }
@@ -538,7 +536,7 @@ function MainApp() {
         g.id === game.id ? { ...g, source: optimisticSource, icon: undefined } : g,
       ),
     );
-    flash(toApp ? `${game.name} → Aplicación` : `${game.name} → Juego`);
+    flash(toApp ? t('toast.toApp', { name: game.name }) : t('toast.toGame', { name: game.name }));
     try {
       await setGameType(game.id, toApp ? 'app' : 'game');
     } catch {
@@ -569,7 +567,7 @@ function MainApp() {
       setGames((prev) =>
         prev.map((g) => (g.id === gameId ? { ...g, favorite: true } : g)),
       );
-      flash(`${game.name} → Favoritos`);
+      flash(t('toast.toFavorites', { name: game.name }));
       try {
         await setFavorite(gameId, true);
       } catch {
@@ -586,7 +584,7 @@ function MainApp() {
       setGames((prev) =>
         prev.map((g) => (g.id === gameId ? { ...g, categories: next } : g)),
       );
-      flash(`${game.name} → ${name}`);
+      flash(t('toast.toCategory', { name: game.name, category: name }));
       try {
         await setCategories(gameId, next);
       } catch {
@@ -600,7 +598,13 @@ function MainApp() {
       {!introDone && <IntroSplash onFinish={() => setIntroDone(true)} />}
 
       {introDone && needsOnboarding && (
-        <Onboarding onComplete={() => setOnboardingState('done')} />
+        <Onboarding
+          onComplete={() => {
+            setOnboardingState('done');
+            // Queue the guided tour; it starts once the first scan has loaded.
+            setTourPending(true);
+          }}
+        />
       )}
 
       {introDone && splashMounted && (
@@ -608,6 +612,22 @@ function MainApp() {
           progress={coverProgress}
           exiting={splashExiting}
           onSkip={() => setSplashDone(true)}
+        />
+      )}
+
+      {showTour && (
+        <GuidedTour
+          onFinish={() => setShowTour(false)}
+          setView={(f) => {
+            setQuery('');
+            setFilter(f);
+          }}
+          resetUi={() => {
+            setMenu(null);
+            setSelectedId(null);
+            setSelectMode(false);
+            setSelectedIds(new Set());
+          }}
         />
       )}
 
@@ -658,34 +678,33 @@ function MainApp() {
                 loading={loading}
                 setShowNotifications={setShowNotifications}
                 setShowAdd={setShowAdd}
+                onStartTour={() => setShowTour(true)}
               />
 
               {/* Content */}
               <section className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
                 {filter === 'home' && !query.trim() ? (
-                  <Home
-                    games={games}
-                    playtimes={playtimes}
-                    onOpen={(g) => setSelectedId(g.id)}
-                    onLaunch={handleLaunch}
-                  />
+                  <div data-tour="home">
+                    <Home
+                      games={games}
+                      playtimes={playtimes}
+                      onOpen={(g) => setSelectedId(g.id)}
+                      onLaunch={handleLaunch}
+                    />
+                  </div>
                 ) : loading && games.length === 0 ? (
                   <SkeletonGrid />
                 ) : error && games.length === 0 ? (
                   <Empty
-                    title="No se pudo cargar la biblioteca"
+                    title={t('library.loadError')}
                     body={error}
-                    action={{ label: 'Reintentar', onClick: handleRescan }}
+                    action={{ label: t('common.retry'), onClick: handleRescan }}
                   />
                 ) : visible.length === 0 ? (
                   <Empty
-                    title={query ? 'Sin resultados' : 'Biblioteca vacía'}
-                    body={
-                      query
-                        ? 'Prueba con otro término de búsqueda.'
-                        : 'Abre tus tiendas (Steam, Epic, GOG…) al menos una vez o añade una app manualmente.'
-                    }
-                    action={query ? undefined : { label: 'Añadir app', onClick: () => setShowAdd(true) }}
+                    title={query ? t('library.noResults') : t('library.empty')}
+                    body={query ? t('library.noResultsBody') : t('library.emptyBody')}
+                    action={query ? undefined : { label: t('library.addApp'), onClick: () => setShowAdd(true) }}
                   />
                 ) : (
                   <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-6">
@@ -731,7 +750,7 @@ function MainApp() {
             setGames((prev) =>
               [...prev, g].sort((a, b) => a.name.localeCompare(b.name)),
             );
-            flash(`${g.name} añadido`);
+            flash(t('toast.added', { name: g.name }));
           }}
         />
       )}
@@ -740,8 +759,12 @@ function MainApp() {
         <SettingsDialog
           onClose={() => setShowSettings(false)}
           onChanged={() => {
-            flash('Actualizando biblioteca…');
+            flash(t('toast.updatingLibrary'));
             refresh();
+          }}
+          onStartTour={() => {
+            setShowSettings(false);
+            setShowTour(true);
           }}
         />
       )}
@@ -750,7 +773,7 @@ function MainApp() {
         <HiddenGamesModal
           onClose={() => setShowHiddenGames(false)}
           onChanged={() => {
-            flash('Biblioteca actualizada.');
+            flash(t('toast.libraryUpdated'));
             refresh(false);
           }}
         />
@@ -764,7 +787,7 @@ function MainApp() {
             setGames((prev) =>
               prev.map((g) => (g.id === id ? { ...g, cover_url: url } : g)),
             );
-            flash(url ? 'Carátula actualizada' : 'Carátula restablecida');
+            flash(url ? t('toast.coverUpdated') : t('toast.coverReset'));
           }}
         />
       )}
@@ -778,7 +801,7 @@ function MainApp() {
             setGames((prev) =>
               prev.map((g) => (g.id === id ? { ...g, categories: cats } : g)),
             );
-            flash('Categorías actualizadas');
+            flash(t('toast.categoriesUpdated'));
           }}
         />
       )}
@@ -795,7 +818,7 @@ function MainApp() {
             // If the active filter pointed at the renamed/merged category, it may
             // no longer exist by that exact name; fall back to "Todo".
             if (filter === `cat:${old}`) setFilter('all');
-            flash('Categoría actualizada');
+            flash(t('toast.categoryUpdated'));
           }}
         />
       )}
@@ -810,7 +833,7 @@ function MainApp() {
             // us back to "Todo" on the next render.
             await refreshCategories();
             setFilter(`cat:${name}`);
-            flash(`Categoría «${name}» creada`);
+            flash(t('toast.categoryCreated', { name }));
           }}
         />
       )}
@@ -819,39 +842,39 @@ function MainApp() {
       {selectMode && selectedIds.size > 0 && (
         <div className="fixed bottom-14 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-xl2 border border-line bg-elevated px-3 py-2 shadow-card">
           <span className="px-2 text-sm font-medium text-ink">
-            {selectedIds.size} seleccionados
+            {t('bulk.selected', { count: selectedIds.size })}
           </span>
           <button
             onClick={() => setSelectedIds(new Set(visible.map((g) => g.id)))}
             className="rounded-lg px-3 py-1.5 text-sm text-muted transition hover:bg-surface hover:text-ink"
           >
-            Todos
+            {t('bulk.selectAll')}
           </button>
           <div className="mx-1 h-6 w-px bg-line" />
           <button
             onClick={() => bulkFavorite(true)}
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-muted transition hover:bg-surface hover:text-ink"
           >
-            <StarIcon className="h-4 w-4" /> Favorito
+            <StarIcon className="h-4 w-4" /> {t('bulk.favorite')}
           </button>
           <button
             onClick={() => setShowBulkCats(true)}
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-muted transition hover:bg-surface hover:text-ink"
           >
-            <TagIcon className="h-4 w-4" /> Categorías
+            <TagIcon className="h-4 w-4" /> {t('bulk.categories')}
           </button>
           <button
             onClick={bulkHide}
             className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-muted transition hover:bg-surface hover:text-destructive"
           >
-            <EyeOffIcon className="h-4 w-4" /> Ocultar
+            <EyeOffIcon className="h-4 w-4" /> {t('bulk.hide')}
           </button>
           <div className="mx-1 h-6 w-px bg-line" />
           <button
             onClick={exitSelection}
             className="rounded-lg px-3 py-1.5 text-sm text-muted transition hover:bg-surface hover:text-ink"
           >
-            Cancelar
+            {t('bulk.cancel')}
           </button>
         </div>
       )}

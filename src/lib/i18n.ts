@@ -70,7 +70,14 @@ const PERSPECTIVES: Record<string, string> = {
   'Virtual Reality': 'Realidad virtual',
 };
 
-export const translateGenre = (g: string): string => GENRES[g] ?? g;
-export const translateMode = (m: string): string => MODES[m] ?? m;
-export const translateTheme = (t: string): string => THEMES[t] ?? t;
-export const translatePerspective = (p: string): string => PERSPECTIVES[p] ?? p;
+import i18n from '@/i18n/config';
+
+// IGDB returns these names in English. We only localize them when the UI is in
+// Spanish; in English we keep the original value.
+const isEs = () => i18n.language?.startsWith('es');
+
+export const translateGenre = (g: string): string => (isEs() ? GENRES[g] ?? g : g);
+export const translateMode = (m: string): string => (isEs() ? MODES[m] ?? m : m);
+export const translateTheme = (t: string): string => (isEs() ? THEMES[t] ?? t : t);
+export const translatePerspective = (p: string): string =>
+  isEs() ? PERSPECTIVES[p] ?? p : p;

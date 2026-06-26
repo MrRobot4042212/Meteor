@@ -343,10 +343,11 @@ fn set_category_order(app: AppHandle, names: Vec<String>) -> Result<(), String> 
     storage::set_category_order(&app, &names)
 }
 
-/// Rich IGDB metadata for the detail page (summary, genres, rating, shots…).
+/// Rich IGDB metadata for the detail page (summary, genres, rating, shots…). The
+/// `lang` is the UI language; the summary is translated to it on the way out.
 #[tauri::command]
-fn game_details(app: AppHandle, name: String) -> Result<Option<igdb::GameDetails>, String> {
-    Ok(art::details(&app, &name))
+fn game_details(app: AppHandle, name: String, lang: String) -> Result<Option<igdb::GameDetails>, String> {
+    Ok(art::details(&app, &name, &lang))
 }
 
 /// Accumulated play stats (seconds + last played) for a game id.
@@ -385,10 +386,19 @@ fn show_main(app: &AppHandle) {
     }
 }
 
-/// Whether Meteor is set to launch on Windows login.
+/// Whether Meteor is set to launch on Windows login. Cuenta como activo tanto la
+/// clave `Run` del plugin (arranque normal) como la **tarea programada** elevada
+/// (`MeteorAutostart`), que usamos cuando Meteor corre como administrador porque
+/// la clave Run no puede lanzar apps que requieren UAC (las bloquea en silencio).
 #[tauri::command]
 fn get_autostart(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
+    #[cfg(windows)]
+    {
+        if elevation::logon_task_exists() {
+            return Ok(true);
+        }
+    }
     app.autolaunch()
         .is_enabled()
         .map_err(|e| format!("Failed to read autostart: {e}"))
@@ -398,6 +408,30 @@ fn get_autostart(app: AppHandle) -> Result<bool, String> {
 fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let auto = app.autolaunch();
+
+    // En Windows, si el proceso está elevado (Meteor configurado como admin
+    // permanente vía el flag RUNASADMIN del instalador), la clave `Run` no sirve:
+    // Windows bloquea en el login las entradas Run que requieren elevación. Usamos
+    // una tarea programada `/RL HIGHEST /SC ONLOGON`, que sí arranca elevado sin
+    // prompt UAC. Limpiamos siempre la clave Run para no dejar una entrada muerta.
+    #[cfg(windows)]
+    {
+        if elevation::is_elevated() {
+            if enabled {
+                elevation::create_logon_task()?;
+                // Quita la clave Run heredada (bloqueada) si la hubiera.
+                let _ = auto.disable();
+            } else {
+                elevation::delete_logon_task()?;
+                let _ = auto.disable();
+            }
+            return Ok(());
+        }
+        // No elevado: nos aseguramos de no dejar una tarea programada huérfana
+        // antes de gestionar la clave Run normal.
+        let _ = elevation::delete_logon_task();
+    }
+
     // Idempotente: si ya está en el estado pedido no hacemos nada. Evita que
     // `disable()` falle con "el sistema no puede encontrar el archivo
     // especificado (os error 2)" al borrar la clave Run del registro cuando
@@ -421,6 +455,22 @@ fn get_app_settings(state: tauri::State<'_, std::sync::Mutex<AppSettings>>) -> R
 #[tauri::command]
 fn system_info() -> Result<system::SystemInfo, String> {
     Ok(system::collect())
+}
+
+/// The current OS user's name, for greetings. Prefers the Windows display/full
+/// name (e.g. "Diego Chicoma"); falls back to the login name (USERNAME). Empty
+/// string if nothing is available.
+#[tauri::command]
+fn username() -> String {
+    #[cfg(windows)]
+    {
+        if let Some(name) = system::display_name() {
+            return name;
+        }
+    }
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_default()
 }
 
 /// Whether Meteor is running elevated (admin). Admin is required for CPU temp and
@@ -502,6 +552,41 @@ fn register_shortcuts(app: &AppHandle, shortcuts: &crate::models::ShortcutsSetti
     }
 }
 
+/// Size & place the overlay window. While only the HUD is showing (`fullscreen`
+/// = false) it's a small box hugging the chosen corner; while its settings screen
+/// is open (`fullscreen` = true) it covers the monitor.
+///
+/// Why not always full-screen: a full-screen transparent top-most window stops
+/// DWM from leaving the game on independent-flip / MPO, so the game gets
+/// composited and picks up ~1-2 frames of presentation latency — high FPS but
+/// laggy input. A small corner window lets the compositor keep the game on its
+/// fast path (and can be promoted to its own hardware overlay plane).
+fn layout_overlay(w: &tauri::WebviewWindow, corner: &str, fullscreen: bool) {
+    use tauri::{PhysicalPosition, PhysicalSize};
+    let Ok(Some(mon)) = w.primary_monitor() else { return };
+    let ms = mon.size();
+    if fullscreen {
+        let _ = w.set_size(PhysicalSize::new(ms.width, ms.height));
+        let _ = w.set_position(PhysicalPosition::new(0, 0));
+        return;
+    }
+    // Logical box big enough for the header + every metric row at the largest
+    // font size; the HUD inside is CSS-anchored to the same corner.
+    let scale = mon.scale_factor();
+    let bw = ((340.0 * scale).round() as u32).min(ms.width);
+    let bh = ((400.0 * scale).round() as u32).min(ms.height);
+    let right = (ms.width - bw) as i32;
+    let bottom = (ms.height - bh) as i32;
+    let (x, y) = match corner {
+        "top-right" => (right, 0),
+        "bottom-left" => (0, bottom),
+        "bottom-right" => (right, bottom),
+        _ => (0, 0), // top-left (default)
+    };
+    let _ = w.set_size(PhysicalSize::new(bw, bh));
+    let _ = w.set_position(PhysicalPosition::new(x, y));
+}
+
 /// Apply the overlay config live: update the sampler and, when disabling, hide the
 /// overlay window immediately and tell it to refresh its config.
 fn apply_overlay_settings(app: &AppHandle, settings: &AppSettings) {
@@ -513,8 +598,11 @@ fn apply_overlay_settings(app: &AppHandle, settings: &AppSettings) {
         settings.overlay.show_cpu_temp,
     );
     metrics::set_gpu(settings.overlay.gpu.clone());
-    if !settings.overlay.enabled {
-        if let Some(w) = app.get_webview_window("overlay") {
+    if let Some(w) = app.get_webview_window("overlay") {
+        if settings.overlay.enabled {
+            // Re-place the HUD box: the chosen corner may have changed.
+            layout_overlay(&w, &settings.overlay.position, false);
+        } else {
             let _ = w.hide();
         }
     }
@@ -539,6 +627,13 @@ fn set_overlay_interactive(app: AppHandle, interactive: bool) -> Result<(), Stri
     if let Some(w) = app.get_webview_window("overlay") {
         w.set_ignore_cursor_events(!interactive)
             .map_err(|e| e.to_string())?;
+        // The settings screen needs the whole monitor; the bare HUD must shrink
+        // back to a small corner box so it doesn't break the game's flip path.
+        let corner = app
+            .try_state::<std::sync::Mutex<AppSettings>>()
+            .map(|s| s.lock().unwrap().overlay.position.clone())
+            .unwrap_or_else(|| "top-left".into());
+        layout_overlay(&w, &corner, interactive);
         if interactive {
             let _ = w.set_focus();
         }
@@ -681,13 +776,29 @@ pub fn run() {
                 .visible(false)
                 .build()
                 {
-                    // Cover the primary monitor and let clicks pass through to the game.
-                    if let Ok(Some(mon)) = overlay.primary_monitor() {
-                        let size = mon.size();
-                        let _ = overlay.set_size(tauri::PhysicalSize::new(size.width, size.height));
-                        let _ = overlay.set_position(tauri::PhysicalPosition::new(0, 0));
-                    }
+                    // Small box hugging the chosen corner (NOT full-screen) and let
+                    // clicks pass through to the game. A full-screen transparent
+                    // top-most window forces DWM to drop the game's independent-flip /
+                    // MPO fast path and composite it, adding ~1-2 frames of input
+                    // latency (feels laggy at high FPS). See layout_overlay.
+                    layout_overlay(&overlay, &settings.overlay.position, false);
                     let _ = overlay.set_ignore_cursor_events(true);
+                }
+            }
+
+            // Migración: si Meteor corre elevado (admin permanente) y quedó una
+            // clave `Run` de autostart pero no la tarea programada, conviértela. La
+            // clave Run no arranca apps elevadas (Windows las bloquea en el login),
+            // así que sin esto el autostart no funcionaría para usuarios admin.
+            #[cfg(windows)]
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                if elevation::is_elevated() && !elevation::logon_task_exists() {
+                    if app.autolaunch().is_enabled().unwrap_or(false) {
+                        if elevation::create_logon_task().is_ok() {
+                            let _ = app.autolaunch().disable();
+                        }
+                    }
                 }
             }
 
@@ -775,6 +886,7 @@ pub fn run() {
             get_app_settings,
             set_app_settings,
             system_info,
+            username,
             is_elevated,
             restart_as_admin,
             open_path,

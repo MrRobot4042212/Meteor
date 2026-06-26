@@ -1,7 +1,9 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Game, PlayStat } from '@/lib/types';
+import { username } from '@/lib/tauri';
 import { coverSrc } from '@/lib/cover';
 import { SOURCE_META } from '@/lib/sources';
 import { PlayIcon, ClockIcon, FireIcon, GridIcon } from './icons';
@@ -27,6 +29,20 @@ export function Home({
   onOpen: (g: Game) => void;
   onLaunch: (g: Game) => void;
 }) {
+  const { t } = useTranslation();
+
+  // The OS user's name for the greeting. Use just the first name and capitalize
+  // it (handles login names like "meorb" → "Meorb"). Empty until it loads.
+  const [name, setName] = useState('');
+  useEffect(() => {
+    username()
+      .then((u) => {
+        const first = u.trim().split(/\s+/)[0] ?? '';
+        if (first) setName(first.charAt(0).toUpperCase() + first.slice(1));
+      })
+      .catch(() => {});
+  }, []);
+
   const byId = useMemo(() => {
     const m = new Map<string, Game>();
     for (const g of games) m.set(g.id, g);
@@ -129,11 +145,13 @@ export function Home({
     <div className="mx-auto max-w-6xl space-y-8">
       {/* Greeting */}
       <div>
-        <h1 className="font-display text-2xl font-bold text-ink">Bienvenido de vuelta</h1>
+        <h1 className="font-display text-2xl font-bold text-ink">
+          {name ? t('home.welcomeBackName', { name }) : t('home.welcomeBack')}
+        </h1>
         <p className="mt-1 text-sm text-muted">
           {hasData
-            ? `Has jugado ${fmtDuration(stats.weekSecs)} esta semana.`
-            : 'Lanza un juego y tus estadísticas aparecerán aquí.'}
+            ? t('home.playedThisWeek', { time: fmtDuration(stats.weekSecs) })
+            : t('home.noStats')}
         </p>
       </div>
 
@@ -141,33 +159,33 @@ export function Home({
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatCard
           icon={<ClockIcon className="h-4 w-4" />}
-          label="Tiempo jugado"
+          label={t('home.timePlayed')}
           value={fmtDuration(stats.totalSecs)}
-          hint="acumulado de siempre"
+          hint={t('home.timePlayedHint')}
         />
         <StatCard
           icon={<FireIcon className="h-4 w-4" />}
-          label="Esta semana"
+          label={t('home.thisWeek')}
           value={fmtDuration(stats.weekSecs)}
-          hint="últimos 7 días"
+          hint={t('home.last7')}
         />
         <StatCard
           icon={<PlayIcon className="h-4 w-4" />}
-          label="Sesiones"
+          label={t('home.sessions')}
           value={String(stats.sessionsWeek)}
-          hint="últimos 7 días"
+          hint={t('home.last7')}
         />
         <StatCard
           icon={<GridIcon className="h-4 w-4" />}
-          label="Juegos jugados"
+          label={t('home.gamesPlayed')}
           value={String(stats.gamesPlayed)}
-          hint="juegos con tiempo"
+          hint={t('home.gamesWithTime')}
         />
       </div>
 
       {/* Continue playing */}
       {recent.length > 0 && (
-        <Section title="Continuar jugando">
+        <Section title={t('home.continuePlaying')}>
           <PosterRow games={recent} playtimes={playtimes} onOpen={onOpen} onLaunch={onLaunch} />
         </Section>
       )}
@@ -209,12 +227,12 @@ export function Home({
       {(mostPlayedGames.length > 0 || mostUsedApps.length > 0) && (
         <div className="grid gap-6 lg:grid-cols-2">
           {mostPlayedGames.length > 0 && (
-            <Section title="Juegos más jugados">
+            <Section title={t('home.mostPlayedGames')}>
               <RankList items={mostPlayedGames} onOpen={onOpen} />
             </Section>
           )}
           {mostUsedApps.length > 0 && (
-            <Section title="Apps más usadas">
+            <Section title={t('home.mostUsedApps')}>
               <RankList items={mostUsedApps} onOpen={onOpen} />
             </Section>
           )}
@@ -223,7 +241,7 @@ export function Home({
 
       {/* Fresh-install fallback */}
       {!hasData && starters.length > 0 && (
-        <Section title="Tu biblioteca">
+        <Section title={t('home.yourLibrary')}>
           <PosterRow games={starters} playtimes={playtimes} onOpen={onOpen} onLaunch={onLaunch} />
         </Section>
       )}
@@ -305,6 +323,7 @@ function PosterRow({
   onOpen: (g: Game) => void;
   onLaunch: (g: Game) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex gap-4 overflow-x-auto pb-2">
       {games.map((g) => {
@@ -325,7 +344,7 @@ function PosterRow({
                   className="pointer-events-auto m-2 flex w-full items-center justify-center gap-2 bg-accent py-1.5 text-xs font-semibold text-white transition hover:bg-accent-soft"
                 >
                   <PlayIcon className="h-3.5 w-3.5" />
-                  Jugar
+                  {t('card.play')}
                 </button>
               </div>
               <span

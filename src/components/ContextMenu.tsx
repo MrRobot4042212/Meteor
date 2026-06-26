@@ -50,6 +50,7 @@ export function ContextMenu({
     <div className="fixed inset-0 z-[60]" onClick={onClose} onContextMenu={(e) => e.preventDefault()}>
       <div
         ref={ref}
+        data-tour="context-menu"
         style={{ left: pos.x, top: pos.y }}
         onClick={(e) => e.stopPropagation()}
         className="absolute min-w-[200px] border border-line bg-popover py-1 shadow-card"

@@ -31,7 +31,10 @@ fn agent() -> &'static ureq::Agent {
 }
 
 const CACHE_FILE: &str = "cover_cache.json";
-const DETAILS_CACHE_FILE: &str = "details_cache.json";
+// v2: entries now store the original English summary (translation is per-language
+// at request time). The old `details_cache.json` baked Spanish in, so it's dropped.
+const DETAILS_CACHE_FILE: &str = "details_cache_v2.json";
+const LEGACY_DETAILS_CACHE_FILE: &str = "details_cache.json";
 const COVERS_DIR: &str = "covers";
 /// A "no cover found" result is only trusted for a while, then re-tried — so a
 /// transient network blip (or IGDB creds added later) self-heals.
@@ -108,39 +111,48 @@ struct DetailEntry {
 
 /// Resolve rich metadata for a game by name via IGDB, cached on disk. Misses are
 /// only trusted for `NEGATIVE_TTL` so they self-heal. Returns `None` if no match.
-pub fn details(app: &AppHandle, name: &str) -> Option<GameDetails> {
+///
+/// The on-disk cache stores the **original English** summary (language-neutral);
+/// translation to `lang` happens per-request on the way out (cached separately by
+/// `translate.rs`), so the same cached entry serves every UI language.
+pub fn details(app: &AppHandle, name: &str, lang: &str) -> Option<GameDetails> {
     let key = name.trim().to_lowercase();
     if key.is_empty() {
         return None;
     }
 
-    let mut cache = load_details_cache(app);
-    if let Some(entry) = cache.get(&key) {
-        if entry.found {
-            return Some(entry.details.clone());
+    // Base (English) details: from cache if present, else a fresh IGDB fetch that
+    // we store untranslated.
+    let mut base = {
+        let cache = load_details_cache(app);
+        match cache.get(&key) {
+            Some(entry) if entry.found => Some(entry.details.clone()),
+            Some(entry) if !is_stale(entry.ts) => return None, // recent miss
+            _ => None,
         }
-        if !is_stale(entry.ts) {
-            return None; // recent miss
-        }
+    };
+
+    if base.is_none() {
+        let resolved = igdb::fetch_details(&name_variants(name));
+        let mut cache = load_details_cache(app);
+        cache.insert(
+            key,
+            DetailEntry {
+                found: resolved.is_some(),
+                details: resolved.clone().unwrap_or_default(),
+                ts: now(),
+            },
+        );
+        let _ = save_details_cache(app, &cache);
+        base = resolved;
     }
 
-    let mut resolved = igdb::fetch_details(&name_variants(name));
-    // Translate the English summary to Spanish (cached separately by translate.rs).
-    if let Some(d) = resolved.as_mut() {
-        if let Some(summary) = d.summary.as_ref().filter(|s| !s.trim().is_empty()) {
-            d.summary = Some(crate::translate::to_spanish(app, summary));
-        }
+    let mut d = base?;
+    // Translate the English summary to the requested UI language (no-op for English).
+    if let Some(summary) = d.summary.as_ref().filter(|s| !s.trim().is_empty()) {
+        d.summary = Some(crate::translate::translate(app, summary, lang));
     }
-    cache.insert(
-        key,
-        DetailEntry {
-            found: resolved.is_some(),
-            details: resolved.clone().unwrap_or_default(),
-            ts: now(),
-        },
-    );
-    let _ = save_details_cache(app, &cache);
-    resolved
+    Some(d)
 }
 
 fn details_cache_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -188,6 +200,13 @@ pub fn clear_cache(app: &AppHandle) -> Result<(), String> {
     if let Ok(path) = details_cache_path(app) {
         if path.exists() {
             fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+    }
+    // Also drop the legacy (Spanish-baked) details cache if it lingers.
+    if let Ok(dir) = app_dir(app) {
+        let legacy = dir.join(LEGACY_DETAILS_CACHE_FILE);
+        if legacy.exists() {
+            let _ = fs::remove_file(&legacy);
         }
     }
     if let Ok(dir) = covers_dir(app) {

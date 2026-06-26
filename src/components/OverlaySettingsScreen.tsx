@@ -1,34 +1,44 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslation, Trans } from 'react-i18next';
 import { getAppSettings, setAppSettings } from '@/lib/tauri';
 import type { OverlaySettings, OverlayPosition } from '@/lib/types';
+import { formatShortcut } from '@/lib/shortcuts';
 import { CloseIcon } from './icons';
 
-const OVERLAY_POSITIONS: { value: OverlayPosition; label: string }[] = [
-  { value: 'top-left', label: 'Sup. izq.' },
-  { value: 'top-right', label: 'Sup. der.' },
-  { value: 'bottom-left', label: 'Inf. izq.' },
-  { value: 'bottom-right', label: 'Inf. der.' },
+const OVERLAY_POSITIONS: { value: OverlayPosition; tKey: string }[] = [
+  { value: 'top-left', tKey: 'overlayScreen.posTopLeft' },
+  { value: 'top-right', tKey: 'overlayScreen.posTopRight' },
+  { value: 'bottom-left', tKey: 'overlayScreen.posBottomLeft' },
+  { value: 'bottom-right', tKey: 'overlayScreen.posBottomRight' },
 ];
 
-const OVERLAY_METRICS: { key: keyof OverlaySettings; label: string; note?: string }[] = [
-  { key: 'show_fps', label: 'FPS' },
-  { key: 'show_frametime', label: 'Frametime' },
-  { key: 'show_gpu', label: 'Uso GPU' },
-  { key: 'show_gpu_temp', label: 'Temp. GPU' },
-  { key: 'show_vram', label: 'VRAM' },
-  { key: 'show_cpu', label: 'Uso CPU' },
-  { key: 'show_cpu_temp', label: 'Temp. CPU' },
-  { key: 'show_ram', label: 'RAM' },
+const OVERLAY_METRICS: { key: keyof OverlaySettings; tKey: string }[] = [
+  { key: 'show_fps', tKey: 'metrics.fps' },
+  { key: 'show_frametime', tKey: 'metrics.frametime' },
+  { key: 'show_gpu', tKey: 'metrics.gpuUsage' },
+  { key: 'show_gpu_temp', tKey: 'metrics.gpuTemp' },
+  { key: 'show_vram', tKey: 'metrics.vram' },
+  { key: 'show_cpu', tKey: 'metrics.cpuUsage' },
+  { key: 'show_cpu_temp', tKey: 'metrics.cpuTemp' },
+  { key: 'show_ram', tKey: 'metrics.ram' },
 ];
 
 export function OverlaySettingsScreen({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
   const [overlay, setOverlay] = useState<OverlaySettings | null>(null);
+  // Shortcut that returns to the game (overlay settings toggle); custom or default.
+  const [settingsKey, setSettingsKey] = useState('F11');
 
   useEffect(() => {
     getAppSettings()
-      .then((s) => setOverlay(s.overlay))
+      .then((s) => {
+        setOverlay(s.overlay);
+        if (s.shortcuts?.overlay_settings) {
+          setSettingsKey(formatShortcut(s.shortcuts.overlay_settings).join('+'));
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -60,17 +70,23 @@ export function OverlaySettingsScreen({ onClose }: { onClose: () => void }) {
         <button
           onClick={onClose}
           className="absolute right-5 top-5 z-10 grid h-8 w-8 place-items-center text-muted transition hover:bg-elevated hover:text-ink"
-          aria-label="Cerrar"
+          aria-label={t('common.close')}
         >
           <CloseIcon className="h-5 w-5" />
         </button>
 
-        <h2 className="mb-1 font-display text-xl font-semibold text-ink">Ajustes del Overlay</h2>
-        <p className="mb-6 text-sm text-muted">Ajusta las métricas en tiempo real. Presiona <kbd className="bg-elevated px-1 font-mono text-xs">Ctrl+Shift+M</kbd> para volver al juego.</p>
+        <h2 className="mb-1 font-display text-xl font-semibold text-ink">{t('overlayScreen.title')}</h2>
+        <p className="mb-6 text-sm text-muted">
+          <Trans
+            i18nKey="overlayScreen.subtitle"
+            values={{ shortcut: settingsKey }}
+            components={{ k: <kbd className="bg-elevated px-1 font-mono text-xs" /> }}
+          />
+        </p>
 
         <div className="space-y-6">
           <div className="rounded border border-line bg-elevated/20 p-4">
-            <h3 className="mb-3 text-sm font-medium text-ink">Posición</h3>
+            <h3 className="mb-3 text-sm font-medium text-ink">{t('overlayScreen.position')}</h3>
             <div className="flex overflow-hidden border border-line">
               {OVERLAY_POSITIONS.map((p) => (
                 <button
@@ -82,14 +98,14 @@ export function OverlaySettingsScreen({ onClose }: { onClose: () => void }) {
                       : 'bg-elevated text-muted hover:text-ink'
                   }`}
                 >
-                  {p.label}
+                  {t(p.tKey)}
                 </button>
               ))}
             </div>
           </div>
 
           <div className="rounded border border-line bg-elevated/20 p-4">
-            <h3 className="mb-3 text-sm font-medium text-ink">Métricas a mostrar</h3>
+            <h3 className="mb-3 text-sm font-medium text-ink">{t('overlayScreen.metricsShow')}</h3>
             <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
               {OVERLAY_METRICS.map((m) => {
                 const on = overlay[m.key] as boolean;
@@ -103,7 +119,7 @@ export function OverlaySettingsScreen({ onClose }: { onClose: () => void }) {
                       on ? 'border-accent/40 bg-elevated text-ink' : 'border-line text-muted'
                     }`}
                   >
-                    <span>{m.label}</span>
+                    <span>{t(m.tKey)}</span>
                     <span
                       className={`h-2.5 w-2.5 border ${
                         on ? 'border-accent bg-accent' : 'border-muted'
@@ -117,12 +133,12 @@ export function OverlaySettingsScreen({ onClose }: { onClose: () => void }) {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="rounded border border-line bg-elevated/20 p-4">
-              <h3 className="mb-3 text-sm font-medium text-ink">Tamaño de texto</h3>
+              <h3 className="mb-3 text-sm font-medium text-ink">{t('overlayScreen.textSize')}</h3>
               <div className="flex overflow-hidden border border-line">
                 {[
-                  { label: 'Pequeño', value: 'xs' },
-                  { label: 'Normal', value: 'sm' },
-                  { label: 'Grande', value: 'base' },
+                  { label: t('overlayScreen.sizeSmall'), value: 'xs' },
+                  { label: t('overlayScreen.sizeNormal'), value: 'sm' },
+                  { label: t('overlayScreen.sizeLarge'), value: 'base' },
                 ].map((o) => (
                   <button
                     key={o.value}
@@ -140,7 +156,7 @@ export function OverlaySettingsScreen({ onClose }: { onClose: () => void }) {
             </div>
 
             <div className="rounded border border-line bg-elevated/20 p-4">
-              <h3 className="mb-3 text-sm font-medium text-ink">Fondo</h3>
+              <h3 className="mb-3 text-sm font-medium text-ink">{t('overlayScreen.background')}</h3>
               <div className="flex overflow-hidden border border-line">
                 {[
                   { label: '50%', value: 50 },

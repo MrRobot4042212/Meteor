@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { getAppSettings } from '@/lib/tauri';
+import { formatShortcut } from '@/lib/shortcuts';
 
 /** A small key/badge chip. */
 function Kbd({ children }: { children: React.ReactNode }) {
@@ -28,19 +30,15 @@ function Shortcut({ keys, label }: { keys: React.ReactNode[]; label: string }) {
 
 /** Footer toolbar listing the app's keyboard/interaction shortcuts. */
 export function Footer() {
-  const [spotlightShortcut, setSpotlightShortcut] = useState<string[]>(['Ctrl', 'Shift', 'Espacio']);
+  const { t } = useTranslation();
+  const [spotlightShortcut, setSpotlightShortcut] = useState<string[]>(['F9']);
 
   useEffect(() => {
     const fetchSettings = async () => {
       try {
         const settings = await getAppSettings();
         if (settings.shortcuts?.spotlight) {
-          const parts = settings.shortcuts.spotlight.split('+').map(p => {
-            if (p === 'CommandOrControl') return 'Ctrl';
-            if (p === 'Space') return 'Espacio';
-            return p;
-          });
-          setSpotlightShortcut(parts);
+          setSpotlightShortcut(formatShortcut(settings.shortcuts.spotlight));
         }
       } catch {
         // ignore
@@ -55,13 +53,13 @@ export function Footer() {
   }, []);
 
   return (
-    <footer className="flex shrink-0 items-center gap-5 overflow-x-auto border-t border-line bg-sidebar px-4 py-2 text-[11px] text-muted">
-      <Shortcut keys={spotlightShortcut} label="Spotlight" />
-      <Shortcut keys={['Clic der.']} label="Acciones" />
-      <Shortcut keys={['Ctrl', 'clic']} label="Seleccionar varios" />
-      <Shortcut keys={['Arrastrar']} label="Categorizar / reordenar" />
-      <Shortcut keys={['↑', '↓', '↵']} label="Navegar el buscador" />
-      <Shortcut keys={['Esc']} label="Cerrar / volver" />
+    <footer data-tour="footer" className="flex shrink-0 items-center gap-5 overflow-x-auto border-t border-line bg-sidebar px-4 py-2 text-[11px] text-muted">
+      <Shortcut keys={spotlightShortcut} label={t('footer.spotlight')} />
+      <Shortcut keys={[t('footer.rightClick')]} label={t('footer.actions')} />
+      <Shortcut keys={['Ctrl', t('footer.click')]} label={t('footer.selectMultiple')} />
+      <Shortcut keys={[t('footer.drag')]} label={t('footer.categorizeReorder')} />
+      <Shortcut keys={['↑', '↓', '↵']} label={t('footer.navigateSearch')} />
+      <Shortcut keys={['Esc']} label={t('footer.closeBack')} />
     </footer>
   );
 }

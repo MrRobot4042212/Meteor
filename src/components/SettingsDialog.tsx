@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslation, Trans } from 'react-i18next';
 import {
   clearCoverCache,
   hiddenCount,
@@ -17,6 +18,7 @@ import {
 } from '@/lib/tauri';
 import type { OverlaySettings, OverlayPosition, SystemInfo, MetricsSample, ShortcutsSettings } from '@/lib/types';
 import { CloseIcon, InfoIcon, GearIcon, FireIcon } from './icons';
+import { formatShortcut } from '@/lib/shortcuts';
 import { OverlayPanel, OVERLAY_CORNER } from './Overlay';
 
 /** Sample telemetry data used by the live overlay preview inside the settings panel. */
@@ -40,41 +42,44 @@ function fmtMem(mb: number): string {
   return `${mb} MB`;
 }
 
-const OVERLAY_POSITIONS: { value: OverlayPosition; label: string }[] = [
-  { value: 'top-left', label: 'Sup. izq.' },
-  { value: 'top-right', label: 'Sup. der.' },
-  { value: 'bottom-left', label: 'Inf. izq.' },
-  { value: 'bottom-right', label: 'Inf. der.' },
+const OVERLAY_POSITIONS: { value: OverlayPosition; tKey: string }[] = [
+  { value: 'top-left', tKey: 'overlayScreen.posTopLeft' },
+  { value: 'top-right', tKey: 'overlayScreen.posTopRight' },
+  { value: 'bottom-left', tKey: 'overlayScreen.posBottomLeft' },
+  { value: 'bottom-right', tKey: 'overlayScreen.posBottomRight' },
 ];
 
 // Metric toggles shown in the overlay settings. FPS/frametime depend on the
 // PresentMon integration (later phase); flagged so expectations are clear.
-const OVERLAY_METRICS: { key: keyof OverlaySettings; label: string; note?: string }[] = [
-  { key: 'show_fps', label: 'FPS' },
-  { key: 'show_frametime', label: 'Frametime' },
-  { key: 'show_gpu', label: 'Uso GPU' },
-  { key: 'show_gpu_temp', label: 'Temp. GPU' },
-  { key: 'show_vram', label: 'VRAM' },
-  { key: 'show_cpu', label: 'Uso CPU' },
-  { key: 'show_cpu_temp', label: 'Temp. CPU' },
-  { key: 'show_ram', label: 'RAM' },
+const OVERLAY_METRICS: { key: keyof OverlaySettings; tKey: string; note?: string }[] = [
+  { key: 'show_fps', tKey: 'metrics.fps' },
+  { key: 'show_frametime', tKey: 'metrics.frametime' },
+  { key: 'show_gpu', tKey: 'metrics.gpuUsage' },
+  { key: 'show_gpu_temp', tKey: 'metrics.gpuTemp' },
+  { key: 'show_vram', tKey: 'metrics.vram' },
+  { key: 'show_cpu', tKey: 'metrics.cpuUsage' },
+  { key: 'show_cpu_temp', tKey: 'metrics.cpuTemp' },
+  { key: 'show_ram', tKey: 'metrics.ram' },
 ];
 
 type Tab = 'system' | 'app' | 'metrics';
 
-const TABS: { id: Tab; label: string; icon: typeof InfoIcon }[] = [
-  { id: 'metrics', label: 'Métricas', icon: FireIcon },
-  { id: 'system', label: 'Información del sistema', icon: InfoIcon },
-  { id: 'app', label: 'Preferencias de aplicación', icon: GearIcon },
+const TABS: { id: Tab; tKey: string; icon: typeof InfoIcon }[] = [
+  { id: 'metrics', tKey: 'settings.tabMetrics', icon: FireIcon },
+  { id: 'system', tKey: 'settings.tabSystem', icon: InfoIcon },
+  { id: 'app', tKey: 'settings.tabApp', icon: GearIcon },
 ];
 
 export function SettingsDialog({
   onClose,
   onChanged,
+  onStartTour,
 }: {
   onClose: () => void;
   /** Called after a change (cache wiped / hidden restored) so the library can refresh. */
   onChanged: () => void;
+  /** Re-launch the guided product tour. */
+  onStartTour?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +92,9 @@ export function SettingsDialog({
   const [shortcuts, setShortcuts] = useState<ShortcutsSettings | null>(null);
   const [sys, setSys] = useState<SystemInfo | null>(null);
   const [elevated, setElevated] = useState<boolean | null>(null);
+  const [language, setLanguageState] = useState<string>('system');
   const [tab, setTab] = useState<Tab>('system');
+  const { t } = useTranslation();
   // Drives the slide-in: false on first paint, flipped true after mount.
   const [shown, setShown] = useState(false);
 
@@ -113,6 +120,7 @@ export function SettingsDialog({
         setTray(s.minimize_to_tray);
         setOverlay(s.overlay);
         setShortcuts(s.shortcuts);
+        setLanguageState(s.language ?? 'system');
       })
       .catch(() => setTray(null));
   }, []);
@@ -148,6 +156,18 @@ export function SettingsDialog({
         .catch((e) => setError(String(e)));
       return nextShortcuts;
     });
+  }
+
+  async function saveLanguage(lang: string) {
+    setLanguageState(lang); // optimistic
+    try {
+      const current = await getAppSettings();
+      // set_app_settings emits "settings-updated", which the I18nProvider listens
+      // to and applies the new language across every window.
+      await setAppSettings({ ...current, language: lang });
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   async function toggleAutostart() {
@@ -241,16 +261,16 @@ export function SettingsDialog({
         {/* Vertical tab rail. */}
         <nav className="flex w-64 shrink-0 flex-col border-r border-line bg-sidebar">
           <div className="flex items-center gap-2 px-5 py-5">
-            <h2 className="font-display text-lg font-semibold text-ink">Ajustes</h2>
+            <h2 className="font-display text-lg font-semibold text-ink">{t('settings.title')}</h2>
           </div>
           <div className="flex flex-1 flex-col gap-0.5 px-3">
-            {TABS.map((t) => {
-              const active = tab === t.id;
-              const Icon = t.icon;
+            {TABS.map((tabDef) => {
+              const active = tab === tabDef.id;
+              const Icon = tabDef.icon;
               return (
                 <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
+                  key={tabDef.id}
+                  onClick={() => setTab(tabDef.id)}
                   className={`flex items-center gap-3 border-l-2 px-3 py-2.5 text-left text-sm transition ${
                     active
                       ? 'border-accent bg-elevated font-medium text-ink'
@@ -258,7 +278,7 @@ export function SettingsDialog({
                   }`}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  <span>{t.label}</span>
+                  <span>{t(tabDef.tKey)}</span>
                 </button>
               );
             })}
@@ -269,7 +289,7 @@ export function SettingsDialog({
         <button
           onClick={onClose}
           className="absolute right-4 top-4 z-10 grid h-9 w-9 place-items-center text-muted transition hover:bg-elevated hover:text-ink"
-          aria-label="Cerrar"
+          aria-label={t('common.close')}
         >
           <CloseIcon className="h-5 w-5" />
         </button>
@@ -294,6 +314,9 @@ export function SettingsDialog({
                 restore={restore}
                 toggleAutostart={toggleAutostart}
                 toggleTray={toggleTray}
+                onStartTour={onStartTour}
+                language={language}
+                onSetLanguage={saveLanguage}
               />
             )}
             {tab === 'metrics' && (
@@ -303,6 +326,7 @@ export function SettingsDialog({
                 updateOverlay={updateOverlay}
                 elevated={elevated}
                 restartAdmin={restartAdmin}
+                shortcuts={shortcuts}
               />
             )}
 
@@ -322,43 +346,45 @@ function MetricsTab({
   updateOverlay,
   elevated,
   restartAdmin,
+  shortcuts,
 }: {
   sys: SystemInfo | null;
   overlay: OverlaySettings | null;
   updateOverlay: (patch: Partial<OverlaySettings>) => void;
   elevated: boolean | null;
   restartAdmin: () => void;
+  shortcuts: ShortcutsSettings | null;
 }) {
+  const { t } = useTranslation();
+  const toggleKey = formatShortcut(shortcuts?.overlay_toggle).join('+') || 'F10';
   // Admin is only actually needed for CPU temp (and NVIDIA FPS via PresentMon).
   const needsAdmin = !!overlay?.show_cpu_temp;
   return (
     <div>
       <TabHeader
-        title="Métricas"
-        desc="Overlay de rendimiento sobre el juego y la GPU que mide."
+        title={t('settings.tabMetrics')}
+        desc={t('settings.mDesc')}
       />
       {!overlay ? (
-        <p className="text-sm text-muted">Cargando…</p>
+        <p className="text-sm text-muted">{t('settings.loading')}</p>
       ) : (
         <div className="space-y-6">
           {elevated === false && (
             <div className={`border p-4 ${needsAdmin ? 'border-accent/50 bg-accent/5' : 'border-line bg-elevated/30'}`}>
-              <p className="mb-1 text-sm font-medium text-ink">Permisos de administrador</p>
+              <p className="mb-1 text-sm font-medium text-ink">{t('settings.mAdminTitle')}</p>
               <p className="mb-3 text-xs leading-relaxed text-muted">
-                La <strong>temperatura de CPU</strong> y el <strong>FPS en tarjetas NVIDIA</strong>{' '}
-                necesitan que Meteor se ejecute como administrador (cargan un driver/sesión del
-                sistema). El resto de métricas (GPU, FPS en AMD, CPU/RAM) funcionan sin admin.
+                <Trans i18nKey="settings.mAdminBody" components={[<strong key="0" />, <strong key="1" />]} />
               </p>
               <Button onClick={restartAdmin} className="w-auto px-4">
-                Reiniciar como administrador
+                {t('settings.mRestartAdmin')}
               </Button>
             </div>
           )}
           {elevated === true && (
-            <p className="text-xs text-info">✓ Ejecutándose como administrador.</p>
+            <p className="text-xs text-info">{t('settings.mRunningAdmin')}</p>
           )}
           <Card
-            title="Overlay de métricas (in-game)"
+            title={t('settings.mOverlayTitle')}
             control={
               <Toggle
                 on={overlay.enabled}
@@ -367,20 +393,20 @@ function MetricsTab({
             }
           >
             <p className="text-xs leading-relaxed text-muted">
-              Muestra FPS, GPU/CPU, temperaturas y memoria sobre el juego mientras juegas.
-              Aparece solo con un juego en marcha. Actívalo/desactívalo en cualquier
-              momento con <kbd className="bg-elevated px-1">Ctrl+Shift+O</kbd>.
+              <Trans
+                i18nKey="settings.mOverlayBody"
+                values={{ key: toggleKey }}
+                components={[<kbd key="0" className="bg-elevated px-1" />]}
+              />
             </p>
             <p className="mt-2 text-[11px] leading-relaxed text-muted/70">
-              ⚠ El overlay requiere modo <strong>borderless windowed</strong>. El fullscreen
-              exclusivo (D3D flip) bypassa el compositor de Windows y no puede ser superpuesto
-              por ninguna ventana nativa.
+              <Trans i18nKey="settings.mOverlayWarn" components={[<strong key="0" />]} />
             </p>
           </Card>
 
           {overlay.enabled && (
             <>
-              <Card title="Posición">
+              <Card title={t('settings.mPosition')}>
                 <div className="flex overflow-hidden border border-line">
                   {OVERLAY_POSITIONS.map((p) => (
                     <button
@@ -392,20 +418,20 @@ function MetricsTab({
                           : 'bg-elevated text-muted hover:text-ink'
                       }`}
                     >
-                      {p.label}
+                      {t(p.tKey)}
                     </button>
                   ))}
                 </div>
               </Card>
 
               {sys && sys.gpus.some((g) => g.key) && (
-                <Card title="Tarjeta gráfica para las métricas">
+                <Card title={t('settings.mGpuCard')}>
                   <select
                     value={overlay.gpu}
                     onChange={(e) => updateOverlay({ gpu: e.target.value })}
                     className="w-full border border-line bg-elevated px-3 py-2 text-sm text-ink outline-none focus:border-accent"
                   >
-                    <option value="auto">Automática (recomendada)</option>
+                    <option value="auto">{t('settings.mGpuAuto')}</option>
                     {sys.gpus
                       .filter((g) => g.key)
                       .map((g) => (
@@ -418,7 +444,7 @@ function MetricsTab({
                 </Card>
               )}
 
-              <Card title="Métricas a mostrar">
+              <Card title={t('settings.mMetricsShow')}>
                 <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                   {OVERLAY_METRICS.map((m) => {
                     const on = overlay[m.key] as boolean;
@@ -433,7 +459,7 @@ function MetricsTab({
                         }`}
                       >
                         <span>
-                          {m.label}
+                          {t(m.tKey)}
                           {m.note && <span className="ml-1 text-[10px] text-muted">· {m.note}</span>}
                         </span>
                         <span
@@ -448,24 +474,24 @@ function MetricsTab({
               </Card>
 
               {/* ── Appearance ─────────────────────────────────────────────── */}
-              <Card title="Apariencia">
+              <Card title={t('settings.mAppearance')}>
                 <div className="space-y-5">
                   {/* Color pickers */}
                   <div>
-                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">Colores</p>
+                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">{t('settings.mColors')}</p>
                     <div className="space-y-2">
                       <ColorPicker
-                        label="Etiquetas (FPS, GPU…)"
+                        label={t('settings.mLabelsColor')}
                         value={overlay.label_color}
                         onChange={(v) => updateOverlay({ label_color: v })}
                       />
                       <ColorPicker
-                        label="Valores (números)"
+                        label={t('settings.mValuesColor')}
                         value={overlay.value_color}
                         onChange={(v) => updateOverlay({ value_color: v })}
                       />
                       <ColorPicker
-                        label="Acento (FPS, GPU%, título)"
+                        label={t('settings.mAccentColor')}
                         value={overlay.accent_color}
                         onChange={(v) => updateOverlay({ accent_color: v })}
                       />
@@ -474,7 +500,7 @@ function MetricsTab({
 
                   {/* Background opacity */}
                   <div>
-                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">Opacidad del fondo</p>
+                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">{t('settings.mBgOpacity')}</p>
                     <SegmentedControl
                       options={[
                         { label: '50%', value: 50 },
@@ -489,12 +515,12 @@ function MetricsTab({
 
                   {/* Font size */}
                   <div>
-                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">Tamaño de texto</p>
+                    <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-muted">{t('settings.mTextSize')}</p>
                     <SegmentedControl
                       options={[
-                        { label: 'Pequeño', value: 'xs' },
-                        { label: 'Normal', value: 'sm' },
-                        { label: 'Grande', value: 'base' },
+                        { label: t('settings.mSizeSmall'), value: 'xs' },
+                        { label: t('settings.mSizeNormal'), value: 'sm' },
+                        { label: t('settings.mSizeLarge'), value: 'base' },
                       ]}
                       value={overlay.font_size}
                       onChange={(v) => updateOverlay({ font_size: v as string })}
@@ -504,10 +530,8 @@ function MetricsTab({
               </Card>
 
               {/* ── Live preview ───────────────────────────────────────────── */}
-              <Card title="Previsualización en vivo">
-                <p className="mb-3 text-xs text-muted">
-                  Así se verá el overlay con la configuración actual. Datos de ejemplo.
-                </p>
+              <Card title={t('settings.mPreview')}>
+                <p className="mb-3 text-xs text-muted">{t('settings.mPreviewNote')}</p>
                 <OverlayPreview cfg={overlay} />
               </Card>
             </>
@@ -519,30 +543,31 @@ function MetricsTab({
 }
 
 function SystemTab({ sys }: { sys: SystemInfo | null }) {
+  const { t } = useTranslation();
   return (
     <div>
       <TabHeader
-        title="Información del sistema"
-        desc="Resumen del hardware detectado en este equipo."
+        title={t('settings.tabSystem')}
+        desc={t('settings.sDesc')}
       />
       {!sys ? (
-        <p className="text-sm text-muted">Cargando…</p>
+        <p className="text-sm text-muted">{t('settings.loading')}</p>
       ) : (
         <div className="space-y-6">
-          <Card title="Resumen">
+          <Card title={t('settings.sSummary')}>
             <dl className="space-y-2 text-sm">
               <InfoRow
-                label="Procesador"
-                value={`${sys.cpu} · ${sys.cpu_cores} núcleos / ${sys.cpu_threads} hilos`}
+                label={t('settings.sCpu')}
+                value={`${sys.cpu} · ${t('settings.sCoresThreads', { cores: sys.cpu_cores, threads: sys.cpu_threads })}`}
               />
-              <InfoRow label="Memoria RAM" value={fmtMem(sys.ram_total_mb)} />
-              <InfoRow label="Sistema" value={sys.os} />
-              {sys.motherboard && <InfoRow label="Placa base" value={sys.motherboard} />}
+              <InfoRow label={t('settings.sRam')} value={fmtMem(sys.ram_total_mb)} />
+              <InfoRow label={t('settings.sOs')} value={sys.os} />
+              {sys.motherboard && <InfoRow label={t('settings.sMotherboard')} value={sys.motherboard} />}
             </dl>
           </Card>
 
           {sys.gpus.length > 0 && (
-            <Card title="Tarjetas gráficas">
+            <Card title={t('settings.sGpus')}>
               <div className="space-y-1.5">
                 {sys.gpus.map((g, i) => (
                   <ListItem
@@ -551,7 +576,7 @@ function SystemTab({ sys }: { sys: SystemInfo | null }) {
                       <>
                         {g.name}
                         {g.kind && <Tag>{g.kind}</Tag>}
-                        {!g.key && <Tag>sin métricas</Tag>}
+                        {!g.key && <Tag>{t('settings.sNoMetrics')}</Tag>}
                       </>
                     }
                     right={fmtMem(g.vram_mb)}
@@ -562,7 +587,7 @@ function SystemTab({ sys }: { sys: SystemInfo | null }) {
           )}
 
           {sys.displays.length > 0 && (
-            <Card title="Pantallas">
+            <Card title={t('settings.sDisplays')}>
               <div className="space-y-1.5">
                 {sys.displays.map((d, i) => (
                   <ListItem
@@ -570,7 +595,7 @@ function SystemTab({ sys }: { sys: SystemInfo | null }) {
                     left={
                       <>
                         {d.name}
-                        {d.primary && <Tag accent>principal</Tag>}
+                        {d.primary && <Tag accent>{t('settings.sPrimary')}</Tag>}
                       </>
                     }
                     right={`${d.width}×${d.height} @ ${d.refresh_hz} Hz`}
@@ -581,14 +606,14 @@ function SystemTab({ sys }: { sys: SystemInfo | null }) {
           )}
 
           {sys.disks.length > 0 && (
-            <Card title="Almacenamiento">
+            <Card title={t('settings.sStorage')}>
               <div className="space-y-1.5">
                 {sys.disks.map((d, i) => (
                   <ListItem
                     key={`disk-${i}`}
                     left={
                       <>
-                        {d.name || 'Disco'}
+                        {d.name || t('settings.sDisk')}
                         {d.fs && <Tag>{d.fs}</Tag>}
                       </>
                     }
@@ -619,6 +644,9 @@ function AppTab({
   restore,
   toggleAutostart,
   toggleTray,
+  onStartTour,
+  language,
+  onSetLanguage,
 }: {
   busy: boolean;
   hidden: number | null;
@@ -634,55 +662,86 @@ function AppTab({
   restore: () => void;
   toggleAutostart: () => void;
   toggleTray: () => void;
+  onStartTour?: () => void;
+  language: string;
+  onSetLanguage: (lang: string) => void;
 }) {
+  const { t } = useTranslation();
+  const LANGS: { value: string; tKey: string }[] = [
+    { value: 'system', tKey: 'settings.languageSystem' },
+    { value: 'es', tKey: 'settings.languageEs' },
+    { value: 'en', tKey: 'settings.languageEn' },
+  ];
   return (
     <div>
       <TabHeader
-        title="Preferencias de aplicación"
-        desc="Comportamiento de Meteor, caché e integraciones."
+        title={t('settings.tabApp')}
+        desc={t('settings.appDesc')}
       />
       <div className="space-y-6">
-        <Card title="Carátulas">
-          <p className="mb-3 text-xs leading-relaxed text-muted">
-            Las carátulas se obtienen automáticamente y se guardan en disco para que
-            carguen al instante. Si alguna se ve mal o quieres volver a buscarlas todas,
-            vacía la caché y se descargarán de nuevo.
-          </p>
+        <Card title={t('settings.language')}>
+          <p className="mb-3 text-xs leading-relaxed text-muted">{t('settings.languageDesc')}</p>
+          <div className="flex overflow-hidden border border-line">
+            {LANGS.map((l) => (
+              <button
+                key={l.value}
+                onClick={() => onSetLanguage(l.value)}
+                className={`flex-1 px-3 py-2 text-sm transition ${
+                  language === l.value
+                    ? 'bg-accent font-medium text-white'
+                    : 'bg-elevated text-muted hover:text-ink'
+                }`}
+              >
+                {t(l.tKey)}
+              </button>
+            ))}
+          </div>
+        </Card>
+
+        {onStartTour && (
+          <Card title={t('settings.tourTitle')}>
+            <p className="mb-3 text-xs leading-relaxed text-muted">
+              {t('settings.tourDesc')}
+            </p>
+            <Button onClick={onStartTour}>{t('settings.tourButton')}</Button>
+          </Card>
+        )}
+
+        <Card title={t('settings.aCovers')}>
+          <p className="mb-3 text-xs leading-relaxed text-muted">{t('settings.aCoversBody')}</p>
           <Button onClick={clear} disabled={busy}>
-            {busy ? 'Trabajando…' : 'Vaciar caché de carátulas'}
+            {busy ? t('settings.aWorking') : t('settings.aClearCache')}
           </Button>
         </Card>
 
-        <Card title="Juegos ocultos">
+        <Card title={t('settings.aHidden')}>
           <p className="mb-3 text-xs leading-relaxed text-muted">
             {hidden && hidden > 0
-              ? `Tienes ${hidden} ${hidden === 1 ? 'juego oculto' : 'juegos ocultos'}. Restáuralos si ocultaste algo por error.`
-              : 'No has ocultado nada. Usa el icono del ojo en una card para ocultar lo que no sea un juego.'}
+              ? t('settings.aHiddenSome', { count: hidden })
+              : t('settings.aHiddenNone')}
           </p>
           <Button onClick={restore} disabled={busy || !hidden}>
-            Restaurar ocultos
+            {t('settings.aRestoreHidden')}
           </Button>
         </Card>
 
         {shortcuts && (
-          <Card title="Atajos de teclado globales">
-            <p className="mb-4 text-xs leading-relaxed text-muted">
-              Estos atajos funcionan en cualquier momento, incluso si estás jugando o navegando por otras aplicaciones. Haz clic en uno para cambiarlo.
-            </p>
+          <Card title={t('settings.aShortcuts')}>
+            <p className="mb-4 text-xs leading-relaxed text-muted">{t('settings.aShortcutsBody')}</p>
             <div className="space-y-3">
               <div>
-                <p className="mb-1 text-xs font-medium text-ink">Abrir Spotlight</p>
-                <p className="mb-2 text-[11px] text-muted">Abre el buscador flotante para lanzar juegos rápidamente.</p>
+                <p className="mb-1 text-xs font-medium text-ink">{t('settings.aSpotlight')}</p>
+                <p className="mb-2 text-[11px] text-muted">{t('settings.aSpotlightDesc')}</p>
                 <ShortcutInput value={shortcuts.spotlight} onChange={(v) => updateShortcuts({ spotlight: v })} />
               </div>
               <div>
-                <p className="mb-1 text-xs font-medium text-ink">Alternar Overlay de Métricas</p>
-                <p className="mb-2 text-[11px] text-muted">Muestra u oculta las estadísticas de rendimiento mientras juegas.</p>
+                <p className="mb-1 text-xs font-medium text-ink">{t('settings.aOverlayToggle')}</p>
+                <p className="mb-2 text-[11px] text-muted">{t('settings.aOverlayToggleDesc')}</p>
                 <ShortcutInput value={shortcuts.overlay_toggle} onChange={(v) => updateShortcuts({ overlay_toggle: v })} />
               </div>
               <div>
-                <p className="mb-1 text-xs font-medium text-ink">Ajustes del Overlay</p>
-                <p className="mb-2 text-[11px] text-muted">Abre el panel rápido para configurar qué métricas se muestran en pantalla.</p>
+                <p className="mb-1 text-xs font-medium text-ink">{t('settings.aOverlaySettings')}</p>
+                <p className="mb-2 text-[11px] text-muted">{t('settings.aOverlaySettingsDesc')}</p>
                 <ShortcutInput value={shortcuts.overlay_settings} onChange={(v) => updateShortcuts({ overlay_settings: v })} />
               </div>
             </div>
@@ -691,26 +750,19 @@ function AppTab({
 
         {autostart !== null && (
           <Card
-            title="Iniciar con Windows"
+            title={t('settings.aAutostart')}
             control={<Toggle on={autostart} onClick={toggleAutostart} />}
           >
-            <p className="text-xs leading-relaxed text-muted">
-              Meteor arranca al iniciar sesión y se queda en la bandeja del sistema. Así
-              el tiempo de juego y Discord se registran aunque no abras la ventana. Cerrar
-              la ventana minimiza a la bandeja; sal del todo desde su menú.
-            </p>
+            <p className="text-xs leading-relaxed text-muted">{t('settings.aAutostartBody')}</p>
           </Card>
         )}
 
         {tray !== null && (
           <Card
-            title="Minimizar a la bandeja al cerrar"
+            title={t('settings.aTray')}
             control={<Toggle on={tray} onClick={toggleTray} />}
           >
-            <p className="text-xs leading-relaxed text-muted">
-              Si está activo, al cerrar Meteor la aplicación seguirá en segundo plano para
-              registrar tu tiempo de juego.
-            </p>
+            <p className="text-xs leading-relaxed text-muted">{t('settings.aTrayBody')}</p>
           </Card>
         )}
 
@@ -745,6 +797,7 @@ function AppTab({
  * Uses mock sample data so the user can see exactly how the HUD will look.
  */
 function OverlayPreview({ cfg }: { cfg: OverlaySettings }) {
+  const { t } = useTranslation();
   const isTop  = cfg.position.startsWith('top');
   const isLeft = cfg.position.endsWith('left');
 
@@ -762,7 +815,7 @@ function OverlayPreview({ cfg }: { cfg: OverlaySettings }) {
       {/* Faint game-world decoration */}
       <div className="absolute inset-0 flex items-center justify-center">
         <span className="select-none text-[11px] font-medium uppercase tracking-widest text-white/10">
-          Previsualización
+          {t('settings.mPreviewWord')}
         </span>
       </div>
       {/* Overlay panel positioned in the chosen corner */}
@@ -846,6 +899,7 @@ function SegmentedControl<T extends string | number>({
 
 /** A button that captures a keyboard shortcut combination. */
 function ShortcutInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { t } = useTranslation();
   const [recording, setRecording] = useState(false);
 
   useEffect(() => {
@@ -887,7 +941,7 @@ function ShortcutInput({ value, onChange }: { value: string; onChange: (v: strin
         recording ? 'border-accent bg-accent/10 text-ink' : 'border-line bg-elevated text-muted hover:text-ink'
       }`}
     >
-      {recording ? 'Presiona la combinación de teclas...' : value}
+      {recording ? t('settings.mRecording') : value}
     </button>
   );
 }

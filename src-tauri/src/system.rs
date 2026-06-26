@@ -239,3 +239,37 @@ fn displays() -> Vec<DisplayInfo> {
 fn displays() -> Vec<DisplayInfo> {
     Vec::new()
 }
+
+/// The Windows user's display/full name (e.g. "Diego Chicoma") via GetUserNameExW
+/// with `NameDisplay`. Returns `None` if it's empty or the call fails (common on
+/// plain local accounts with no full name set), so the caller falls back to the
+/// login name.
+#[cfg(windows)]
+pub fn display_name() -> Option<String> {
+    use windows::Win32::Security::Authentication::Identity::{GetUserNameExW, NameDisplay};
+
+    // First call with a zero size fails and reports the buffer length needed.
+    let mut size: u32 = 0;
+    unsafe { GetUserNameExW(NameDisplay, None, &mut size) };
+    if size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; size as usize];
+    let ok = unsafe {
+        GetUserNameExW(
+            NameDisplay,
+            Some(windows::core::PWSTR(buf.as_mut_ptr())),
+            &mut size,
+        )
+    };
+    if !ok {
+        return None;
+    }
+    let name = String::from_utf16_lossy(&buf[..size as usize]);
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}

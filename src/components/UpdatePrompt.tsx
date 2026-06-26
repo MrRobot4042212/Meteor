@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { RefreshIcon, CloseIcon } from './icons';
@@ -11,6 +12,7 @@ type Phase = 'idle' | 'available' | 'downloading' | 'ready' | 'error';
  *  one-click update (download → install → relaunch). Silent if up to date,
  *  offline, or running in dev (the check just fails and is ignored). */
 export function UpdatePrompt() {
+  const { t } = useTranslation();
   const [update, setUpdate] = useState<Update | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
   const [pct, setPct] = useState(0);
@@ -66,7 +68,7 @@ export function UpdatePrompt() {
       <div className="mb-2 flex items-center gap-2">
         <RefreshIcon className="h-[18px] w-[18px] text-accent" />
         <p className="flex-1 text-sm font-semibold text-ink">
-          {phase === 'error' ? 'Error al actualizar' : `Nueva versión ${update?.version ?? ''}`}
+          {phase === 'error' ? t('update.errorTitle') : t('update.newVersion', { version: update?.version ?? '' })}
         </p>
         {(phase === 'available' || phase === 'error') && (
           <button
@@ -81,31 +83,31 @@ export function UpdatePrompt() {
       {phase === 'available' && (
         <>
           <p className="mb-3 text-xs leading-relaxed text-muted">
-            Hay una versión nueva de Meteor disponible. Se descarga, instala y reinicia la app.
+            {t('update.body')}
           </p>
           <button
             onClick={install}
             className="w-full bg-accent py-2 text-sm font-semibold text-white transition hover:bg-accent-soft"
           >
-            Actualizar y reiniciar
+            {t('update.updateRestart')}
           </button>
         </>
       )}
 
       {phase === 'downloading' && (
         <>
-          <p className="mb-2 text-xs text-muted">Descargando… {pct}%</p>
+          <p className="mb-2 text-xs text-muted">{t('update.downloading', { pct })}</p>
           <div className="h-1.5 w-full bg-surface">
             <div className="h-full bg-accent transition-all" style={{ width: `${pct}%` }} />
           </div>
         </>
       )}
 
-      {phase === 'ready' && <p className="text-xs text-muted">Reiniciando…</p>}
+      {phase === 'ready' && <p className="text-xs text-muted">{t('update.restarting')}</p>}
 
       {phase === 'error' && (
         <p className="text-xs leading-relaxed text-muted">
-          No se pudo completar la actualización. Inténtalo más tarde.
+          {t('update.errorBody')}
         </p>
       )}
     </div>

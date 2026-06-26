@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { GameSource, Category } from '@/lib/types';
 import { SOURCE_META, SOURCE_ORDER } from '@/lib/sources';
 import { CATEGORY_ICONS } from '@/lib/categoryIcons';
@@ -44,6 +45,7 @@ export function Sidebar({
   /** Persist a new category order (full ordered list of names). */
   onReorderCategories: (names: string[]) => void;
 }) {
+  const { t } = useTranslation();
   // Which droppable target the dragged card is currently hovering, for highlight.
   const [dragOver, setDragOver] = useState<Filter | null>(null);
   // Name of the category being dragged to reorder (vs. a game being assigned).
@@ -79,9 +81,9 @@ export function Sidebar({
   // Group 1 — the library itself: everything + favorites. Favoritos is always
   // shown so it can act as a permanent drop target (drag a game in to favorite).
   const libraryItems: NavItem[] = [
-    { id: 'home', label: 'Inicio', Icon: HomeIcon },
-    { id: 'all', label: 'Todo', Icon: GridIcon },
-    { id: 'favorites', label: 'Favoritos', Icon: StarIcon },
+    { id: 'home', label: t('sidebar.home'), Icon: HomeIcon },
+    { id: 'all', label: t('sidebar.all'), Icon: GridIcon },
+    { id: 'favorites', label: t('sidebar.favorites'), Icon: StarIcon },
   ];
 
   // Group 2 — the app's built-in store filters (only non-empty ones). Apps are
@@ -141,7 +143,7 @@ export function Sidebar({
   );
 
   return (
-    <aside className="flex w-[208px] shrink-0 flex-col overflow-y-auto border-r border-line bg-sidebar px-3 py-5">
+    <aside data-tour="sidebar" className="flex w-[208px] shrink-0 flex-col overflow-y-auto border-r border-line bg-sidebar px-3 py-5">
       <div className="mb-3 flex items-center gap-2.5 px-2">
         <svg xmlns="http://www.w3.org/2000/svg" width="24px" height="24px" viewBox="0 0 256 251">
           <path d="M0 0h256v251H0z" fill="none" />
@@ -153,7 +155,7 @@ export function Sidebar({
       </div>
 
       {/* Group: Biblioteca (Favoritos is a drop target) */}
-      <Heading>Biblioteca</Heading>
+      <Heading>{t('sidebar.library')}</Heading>
       <nav className="flex flex-col gap-1">
         {libraryItems.map((it) => renderItem(it, it.id === 'favorites'))}
       </nav>
@@ -161,7 +163,7 @@ export function Sidebar({
       {/* Group: Proveedores (built-in / default) */}
       {storeItems.length > 0 && (
         <>
-          <Heading>Plataformas</Heading>
+          <Heading>{t('sidebar.platforms')}</Heading>
           <nav className="flex flex-col gap-1">{storeItems.map((it) => renderItem(it))}</nav>
         </>
       )}
@@ -169,19 +171,19 @@ export function Sidebar({
       {/* Group: Aplicaciones (auto-detected non-game apps) */}
       {counts.app > 0 && (
         <>
-          <Heading>Aplicaciones</Heading>
+          <Heading>{t('sidebar.applications')}</Heading>
           <nav className="flex flex-col gap-1">
-            {renderItem({ id: 'app', label: 'Apps', Icon: AppIcon })}
+            {renderItem({ id: 'app', label: t('sidebar.apps'), Icon: AppIcon })}
           </nav>
         </>
       )}
 
       {/* Group: Categorías (user-created, drop targets), separated from defaults */}
-      <div className="flex items-center justify-between pr-1">
-        <Heading>Categorías Personalizadas</Heading>
+      <div data-tour="categories" className="flex items-center justify-between pr-1">
+        <Heading>{t('sidebar.customCategories')}</Heading>
         <button
           onClick={onAddCategory}
-          title="Nueva categoría"
+          title={t('sidebar.newCategory')}
           className="mt-3 grid h-5 w-5 place-items-center text-muted transition hover:bg-elevated hover:text-accent"
         >
           <PlusIcon className="h-3.5 w-3.5" />
@@ -246,7 +248,7 @@ export function Sidebar({
         </nav>
       ) : (
         <p className="px-3 py-1 text-xs leading-relaxed text-muted/60">
-          Crea tus propias categorías con el botón +.
+          {t('sidebar.categoriesEmpty')}
         </p>
       )}
 
@@ -256,7 +258,7 @@ export function Sidebar({
           className="flex items-center gap-3 px-3 py-2.5 text-sm text-muted transition-colors hover:bg-elevated/50 hover:text-ink"
         >
           <PlusIcon className="h-[18px] w-[18px]" />
-          <span>Nueva categoría</span>
+          <span>{t('sidebar.newCategory')}</span>
         </button>
         <hr />
         <button
@@ -264,17 +266,18 @@ export function Sidebar({
           className="flex items-center gap-3 px-3 py-2.5 text-sm text-muted transition-colors hover:bg-elevated/50 hover:text-ink"
         >
           <EyeOffIcon className="h-[18px] w-[18px]" />
-          <span>Elementos ocultos</span>
+          <span>{t('sidebar.hiddenItems')}</span>
         </button>
         <button
+          data-tour="settings-btn"
           onClick={onOpenSettings}
           className="flex items-center gap-3 px-3 py-2.5 text-sm text-muted transition-colors hover:bg-elevated/50 hover:text-ink"
         >
           <GearIcon className="h-[18px] w-[18px]" />
-          <span>Ajustes</span>
+          <span>{t('sidebar.settings')}</span>
         </button>
         <span className="text-xs text-muted border-t border-line pt-2 mt-2 text-center">
-          Hecho por: <a href="https://github.com/MrRobot4042212" className="text-underline hover:text-accent">
+          {t('sidebar.madeBy')} <a href="https://github.com/MrRobot4042212" className="text-underline hover:text-accent">
             Dalfon_dev
           </a>
         </span>

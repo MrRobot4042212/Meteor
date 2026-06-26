@@ -8,22 +8,40 @@ use tauri::{AppHandle, Manager};
 
 const CACHE_FILE: &str = "translate_cache.json";
 
-/// Translate text to Spanish via Google Translate's free endpoint, cached on disk
-/// (keyed by the source text) so each string is only fetched once. On any failure
-/// the original text is returned, so the summary always renders.
-pub fn to_spanish(app: &AppHandle, text: &str) -> String {
+/// Normalize a UI language tag ("es", "en-US", "es-ES"…) to a 2-letter target
+/// code. Empty/unknown falls back to English.
+fn target_lang(lang: &str) -> String {
+    let code = lang.trim().get(..2).unwrap_or("en").to_lowercase();
+    if code.is_empty() {
+        "en".to_string()
+    } else {
+        code
+    }
+}
+
+/// Translate text to `lang` via Google Translate's free endpoint, cached on disk
+/// (keyed by target language + source text) so each string is fetched once per
+/// language. IGDB summaries are already English, so `en` returns the original
+/// untouched. On any failure the original text is returned, so the summary always
+/// renders.
+pub fn translate(app: &AppHandle, text: &str, lang: &str) -> String {
     let text = text.trim();
     if text.is_empty() {
         return String::new();
     }
+    let target = target_lang(lang);
+    // Source is English (IGDB); nothing to do for English UIs.
+    if target == "en" {
+        return text.to_string();
+    }
 
-    let key = hash(text);
+    let key = format!("{target}:{}", hash(text));
     let mut cache = load_cache(app);
     if let Some(hit) = cache.get(&key) {
         return hit.clone();
     }
 
-    let translated = google_translate(text).unwrap_or_else(|| text.to_string());
+    let translated = google_translate(text, &target).unwrap_or_else(|| text.to_string());
     cache.insert(key, translated.clone());
     let _ = save_cache(app, &cache);
     translated
@@ -31,9 +49,9 @@ pub fn to_spanish(app: &AppHandle, text: &str) -> String {
 
 /// Unofficial gtx endpoint: returns a nested JSON array; the first element holds
 /// the translated sentence segments, which we concatenate.
-fn google_translate(text: &str) -> Option<String> {
+fn google_translate(text: &str, target: &str) -> Option<String> {
     let url = format!(
-        "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=es&dt=t&q={}",
+        "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target}&dt=t&q={}",
         urlencoding::encode(text)
     );
     let json: serde_json::Value = ureq::AgentBuilder::new()

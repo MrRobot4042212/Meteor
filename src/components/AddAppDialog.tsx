@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { open } from '@tauri-apps/plugin-dialog';
 import { addManualApp } from '@/lib/tauri';
 import type { Game } from '@/lib/types';
@@ -18,6 +19,7 @@ export function AddAppDialog({
   onClose: () => void;
   onAdded: (g: Game) => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [exe, setExe] = useState('');
   const [cover, setCover] = useState('');
@@ -29,7 +31,7 @@ export function AddAppDialog({
     const selected = await open({
       multiple: false,
       directory: false,
-      filters: [{ name: 'Aplicaciones', extensions: ['exe', 'lnk', 'bat'] }],
+      filters: [{ name: t('dialog.appsFilter'), extensions: ['exe', 'lnk', 'bat'] }],
     });
     if (typeof selected === 'string') {
       setExe(selected);
@@ -39,7 +41,7 @@ export function AddAppDialog({
 
   async function submit() {
     if (!name.trim() || !exe.trim()) {
-      setError('Elige un ejecutable y dale un nombre.');
+      setError(t('dialog.addNeedExeName'));
       return;
     }
     setBusy(true);
@@ -66,7 +68,7 @@ export function AddAppDialog({
       >
         <div className="mb-5 flex items-center justify-between">
           <h2 className="font-display text-lg font-semibold text-ink">
-            Añadir app o juego
+            {t('dialog.addTitle')}
           </h2>
           <button
             onClick={onClose}
@@ -77,28 +79,28 @@ export function AddAppDialog({
         </div>
 
         <label className="mb-1.5 block text-xs font-medium text-muted">
-          Ejecutable
+          {t('dialog.executable')}
         </label>
         <button
           onClick={pickExe}
           className="mb-4 flex w-full items-center gap-2 truncate rounded-lg border border-line bg-elevated px-3 py-2.5 text-left text-sm text-ink hover:border-accent/40"
         >
           <FolderIcon className="h-[18px] w-[18px] shrink-0 text-accent" />
-          <span className="truncate">{exe || 'Seleccionar archivo…'}</span>
+          <span className="truncate">{exe || t('dialog.selectFile')}</span>
         </button>
 
         <label className="mb-1.5 block text-xs font-medium text-muted">
-          Nombre
+          {t('dialog.name')}
         </label>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Nombre del juego o app"
+          placeholder={t('dialog.namePlaceholder')}
           className="mb-4 w-full rounded-lg border border-line bg-elevated px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted/60 focus:border-accent/60"
         />
 
         <label className="mb-1.5 block text-xs font-medium text-muted">
-          URL de carátula <span className="text-muted/60">(opcional)</span>
+          {t('dialog.coverUrl')} <span className="text-muted/60">{t('dialog.optional')}</span>
         </label>
         <input
           value={cover}
@@ -114,14 +116,14 @@ export function AddAppDialog({
             onClick={onClose}
             className="rounded-lg px-4 py-2 text-sm text-muted hover:text-ink"
           >
-            Cancelar
+            {t('common.cancel')}
           </button>
           <button
             onClick={submit}
             disabled={busy}
             className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-soft disabled:opacity-50"
           >
-            {busy ? 'Añadiendo…' : 'Añadir'}
+            {busy ? t('dialog.adding') : t('common.add')}
           </button>
         </div>
       </div>

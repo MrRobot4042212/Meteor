@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Game } from '@/lib/types';
 import { fuzzyScore } from '@/lib/fuzzy';
 import { coverSrc } from '@/lib/cover';
@@ -25,6 +26,7 @@ export function Spotlight({
   onLaunch: (g: Game) => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const [idx, setIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -96,13 +98,13 @@ export function Spotlight({
               setIdx(0);
             }}
             onKeyDown={onKeyDown}
-            placeholder="Lanzar un juego…"
+            placeholder={t('spotlight.placeholder')}
             className="w-full bg-transparent py-4 text-base text-ink outline-none placeholder:text-muted/60"
           />
         </div>
 
         {results.length === 0 ? (
-          <div className="px-4 py-8 text-center text-sm text-muted">Sin resultados</div>
+          <div className="px-4 py-8 text-center text-sm text-muted">{t('spotlight.noResults')}</div>
         ) : (
           <ul className="max-h-[52vh] overflow-y-auto py-1">
             {results.map((game, i) => {

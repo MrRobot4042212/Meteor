@@ -57,6 +57,8 @@ windows = { version = "0.61", features = [
     # Detect process elevation and relaunch elevated ("Restart as admin") for the
     # admin-only metrics (CPU temp, NVIDIA FPS via PresentMon).
     "Win32_Security",
+    # Resolve the user's display/full name for the Home greeting (GetUserNameExW).
+    "Win32_Security_Authentication_Identity",
     "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }

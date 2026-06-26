@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { addCategory } from '@/lib/tauri';
 import { CATEGORY_ICONS, CATEGORY_ICON_KEYS } from '@/lib/categoryIcons';
 import { CloseIcon, TagIcon } from './icons';
@@ -17,6 +18,7 @@ export function NewCategoryDialog({
   onClose: () => void;
   onCreated: (name: string) => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [icon, setIcon] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -26,7 +28,7 @@ export function NewCategoryDialog({
     const value = name.trim();
     if (!value) return;
     if (existing.some((c) => c.toLowerCase() === value.toLowerCase())) {
-      setError('Esa categoría ya existe.');
+      setError(t('dialog.categoryExists'));
       return;
     }
     setBusy(true);
@@ -52,7 +54,7 @@ export function NewCategoryDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-5 flex items-center justify-between">
-          <h2 className="font-display text-lg font-semibold text-ink">Nueva categoría</h2>
+          <h2 className="font-display text-lg font-semibold text-ink">{t('sidebar.newCategory')}</h2>
           <button
             onClick={onClose}
             className="grid h-8 w-8 shrink-0 place-items-center text-muted hover:bg-elevated hover:text-ink"
@@ -61,7 +63,7 @@ export function NewCategoryDialog({
           </button>
         </div>
 
-        <label className="mb-1.5 block text-xs font-medium text-muted">Nombre</label>
+        <label className="mb-1.5 block text-xs font-medium text-muted">{t('dialog.name')}</label>
         <input
           autoFocus
           value={name}
@@ -72,16 +74,16 @@ export function NewCategoryDialog({
               commit();
             }
           }}
-          placeholder="p. ej. RPG, Cooperativo, Pendientes…"
+          placeholder={t('dialog.newCategoryPlaceholder')}
           className="w-full border border-line bg-elevated px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted/60 focus:border-accent/60"
         />
 
-        <label className="mb-1.5 mt-4 block text-xs font-medium text-muted">Icono</label>
+        <label className="mb-1.5 mt-4 block text-xs font-medium text-muted">{t('dialog.icon')}</label>
         <div className="grid grid-cols-8 gap-1.5">
           {/* "No icon" → falls back to the generic tag in the sidebar. */}
           <button
             onClick={() => setIcon(null)}
-            title="Sin icono"
+            title={t('dialog.noIcon')}
             className={`grid aspect-square place-items-center border transition ${
               icon === null
                 ? 'border-accent bg-accent/15 text-ink'
@@ -117,14 +119,14 @@ export function NewCategoryDialog({
             onClick={onClose}
             className="px-4 py-2 text-sm text-muted hover:text-ink"
           >
-            Cancelar
+            {t('common.cancel')}
           </button>
           <button
             onClick={commit}
             disabled={busy || !name.trim()}
             className="bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-soft disabled:opacity-50"
           >
-            {busy ? 'Creando…' : 'Crear'}
+            {busy ? t('dialog.creating') : t('dialog.create')}
           </button>
         </div>
       </div>

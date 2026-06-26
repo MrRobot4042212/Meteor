@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import type { Game, GameDetails, PlayStat, Session } from '@/lib/types';
 import { gameDetails, getPlaytime, dirSize, openPath, userScreenshots } from '@/lib/tauri';
@@ -34,8 +35,10 @@ import {
   GearIcon,
 } from './icons';
 
-function formatPlaytime(seconds: number): string {
-  if (seconds < 60) return 'Sin registro';
+type T = (key: string, opts?: Record<string, unknown>) => string;
+
+function formatPlaytime(seconds: number, t: T): string {
+  if (seconds < 60) return t('detail.noRecord');
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   if (h === 0) return `${m} min`;
@@ -54,12 +57,12 @@ function formatSize(bytes: number): string {
   return `${Math.round(bytes / 1024)} KB`;
 }
 
-function formatLastPlayed(ts: number): string {
+function formatLastPlayed(ts: number, t: T): string {
   const diff = Date.now() / 1000 - ts;
   const day = 86400;
-  if (diff < day) return 'Hoy';
-  if (diff < 2 * day) return 'Ayer';
-  if (diff < 30 * day) return `Hace ${Math.floor(diff / day)} días`;
+  if (diff < day) return t('detail.today');
+  if (diff < 2 * day) return t('detail.yesterday');
+  if (diff < 30 * day) return t('detail.daysAgo', { count: Math.floor(diff / day) });
   return new Date(ts * 1000).toLocaleDateString();
 }
 
@@ -92,6 +95,7 @@ export function DetailView({
   onRemove?: (g: Game) => void;
   onHide?: (g: Game) => void;
 }) {
+  const { t, i18n } = useTranslation();
   const [details, setDetails] = useState<GameDetails | null | undefined>(undefined);
   const [play, setPlay] = useState<PlayStat>({ seconds: 0, history: [] });
   const [size, setSize] = useState<number | null | undefined>(undefined);
@@ -115,7 +119,7 @@ export function DetailView({
     if (isApp) {
       setDetails(null); // no game metadata for apps
     } else {
-      gameDetails(game.name)
+      gameDetails(game.name, i18n.language)
         .then((d) => alive && setDetails(d))
         .catch(() => alive && setDetails(null));
       // The user's own screenshots (Steam / Game Bar), not promotional art.
@@ -127,7 +131,7 @@ export function DetailView({
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.id, game.name, isApp]);
+  }, [game.id, game.name, isApp, i18n.language]);
 
   useEffect(() => {
     let alive = true;
@@ -169,7 +173,7 @@ export function DetailView({
   const ttb = details?.time_to_beat;
 
   return (
-    <div className="relative h-full overflow-y-auto bg-background">
+    <div data-tour="detail" className="relative h-full overflow-y-auto bg-background">
       {/* Backdrop */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] overflow-hidden">
         {backdrop && (
@@ -190,7 +194,7 @@ export function DetailView({
           className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted transition hover:text-ink"
         >
           <ArrowLeftIcon className="h-[18px] w-[18px]" />
-          Biblioteca
+          {t('sidebar.library')}
         </button>
       </div>
 
@@ -262,24 +266,24 @@ export function DetailView({
                 className="flex items-center gap-2 bg-accent px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-soft"
               >
                 <PlayIcon className="h-4 w-4" />
-                Jugar
+                {t('common.play')}
               </button>
               <IconBtn
-                title={game.favorite ? 'Quitar de favoritos' : 'Marcar favorito'}
+                title={game.favorite ? t('detail.favoriteRemove') : t('detail.favoriteAdd')}
                 active={game.favorite}
                 onClick={() => onToggleFavorite(game)}
               >
                 <StarIcon className="h-[18px] w-[18px]" fill={game.favorite ? 'currentColor' : 'none'} />
               </IconBtn>
-              <IconBtn title="Categorías" onClick={() => onEditCategories(game)}>
+              <IconBtn title={t('card.categories')} onClick={() => onEditCategories(game)}>
                 <TagIcon className="h-[18px] w-[18px]" />
               </IconBtn>
-              <IconBtn title="Cambiar carátula" onClick={() => onEditCover(game)}>
+              <IconBtn title={t('card.changeCover')} onClick={() => onEditCover(game)}>
                 <ImageIcon className="h-[18px] w-[18px]" />
               </IconBtn>
               {onToggleType && (
                 <IconBtn
-                  title={game.source === 'app' ? 'Marcar como juego' : 'Marcar como aplicación'}
+                  title={game.source === 'app' ? t('menu.markAsGame') : t('menu.markAsApp')}
                   onClick={() => onToggleType(game)}
                 >
                   {game.source === 'app' ? (
@@ -291,19 +295,19 @@ export function DetailView({
               )}
               {game.install_dir && (
                 <IconBtn
-                  title="Abrir carpeta"
+                  title={t('menu.openFolder')}
                   onClick={() => openPath(game.install_dir as string)}
                 >
                   <FolderIcon className="h-[18px] w-[18px]" />
                 </IconBtn>
               )}
               {onHide && (
-                <IconBtn title="Ocultar" onClick={() => onHide(game)}>
+                <IconBtn title={t('common.hide')} onClick={() => onHide(game)}>
                   <EyeOffIcon className="h-[18px] w-[18px]" />
                 </IconBtn>
               )}
               {onRemove && (
-                <IconBtn title="Quitar" onClick={() => onRemove(game)}>
+                <IconBtn title={t('common.remove')} onClick={() => onRemove(game)}>
                   <TrashIcon className="h-[18px] w-[18px]" />
                 </IconBtn>
               )}
@@ -324,22 +328,22 @@ export function DetailView({
 
         {/* Activity metrics */}
         <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <Metric label="Tiempo jugado" value={formatPlaytime(play.seconds)} icon={<ClockIcon className="h-4 w-4" />} />
+          <Metric label={t('home.timePlayed')} value={formatPlaytime(play.seconds, t)} icon={<ClockIcon className="h-4 w-4" />} />
           <Metric
-            label="Últimos 14 días"
-            value={formatPlaytime(recentSeconds(play.history, 14))}
+            label={t('detail.last14')}
+            value={formatPlaytime(recentSeconds(play.history, 14), t)}
           />
-          <Metric label="Sesiones" value={play.history.length > 0 ? String(play.history.length) : '—'} />
+          <Metric label={t('home.sessions')} value={play.history.length > 0 ? String(play.history.length) : '—'} />
           <Metric
-            label="Última vez"
-            value={play.last_played ? formatLastPlayed(play.last_played) : 'Nunca'}
+            label={t('detail.lastPlayed')}
+            value={play.last_played ? formatLastPlayed(play.last_played, t) : t('common.never')}
           />
           <Metric
-            label="Tamaño"
+            label={t('detail.size')}
             value={size === undefined ? '…' : size === null ? '—' : formatSize(size)}
           />
           <Metric
-            label="Modos"
+            label={t('detail.modes')}
             value={details?.modes?.length ? details.modes.map(translateMode).join(', ') : '—'}
           />
         </div>
@@ -347,13 +351,13 @@ export function DetailView({
         {!isApp && (
           <>
             {/* Summary */}
-            <Section title="Resumen">
+            <Section title={t('detail.summary')}>
           {details === undefined ? (
-            <p className="text-sm text-muted">Cargando información…</p>
+            <p className="text-sm text-muted">{t('detail.loadingInfo')}</p>
           ) : details?.summary ? (
             <p className="max-w-3xl text-sm leading-relaxed text-ink/90">{details.summary}</p>
           ) : (
-            <p className="text-sm text-muted">No hay descripción disponible para este título.</p>
+            <p className="text-sm text-muted">{t('detail.noDescription')}</p>
           )}
           {(details?.developer ||
             details?.publisher ||
@@ -362,22 +366,22 @@ export function DetailView({
             <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-sm">
               {details?.developer && (
                 <span className="text-muted">
-                  Desarrollador: <span className="text-ink">{details.developer}</span>
+                  {t('detail.developer')}: <span className="text-ink">{details.developer}</span>
                 </span>
               )}
               {details?.publisher && (
                 <span className="text-muted">
-                  Editor: <span className="text-ink">{details.publisher}</span>
+                  {t('detail.publisher')}: <span className="text-ink">{details.publisher}</span>
                 </span>
               )}
               {details?.franchise && (
                 <span className="text-muted">
-                  Saga: <span className="text-ink">{details.franchise}</span>
+                  {t('detail.franchise')}: <span className="text-ink">{details.franchise}</span>
                 </span>
               )}
               {(details?.perspectives?.length ?? 0) > 0 && (
                 <span className="text-muted">
-                  Perspectiva:{' '}
+                  {t('detail.perspective')}:{' '}
                   <span className="text-ink">
                     {details!.perspectives!.map(translatePerspective).join(', ')}
                   </span>
@@ -390,10 +394,10 @@ export function DetailView({
         {/* Tabs navigation */}
         <div className="mt-10 mb-6 flex overflow-x-auto border-b border-line">
           {[
-            { id: 'galeria', label: 'Galería' },
-            { id: 'videos', label: 'Vídeos' },
-            { id: 'grial', label: 'Santo Grial' },
-            { id: 'local', label: 'Local' },
+            { id: 'galeria', label: t('detail.tabGallery') },
+            { id: 'videos', label: t('detail.tabVideos') },
+            { id: 'grial', label: t('detail.tabGrail') },
+            { id: 'local', label: t('detail.tabLocal') },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -413,7 +417,7 @@ export function DetailView({
         {activeTab === 'galeria' && (
           <div className="space-y-10">
             {gallery.length > 0 && (
-              <Section title="Media Promocional">
+              <Section title={t('detail.promoMedia')}>
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
                   {gallery.map((src) => (
                     <button
@@ -434,7 +438,7 @@ export function DetailView({
               </Section>
             )}
 
-            <Section title="Mis capturas">
+            <Section title={t('detail.myScreenshots')}>
               {shots.length > 0 ? (
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
                   {shots.map((s) => (
@@ -454,10 +458,7 @@ export function DetailView({
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-muted">
-                  No hay capturas tuyas de este juego. Se buscan en las capturas de Steam
-                  (F12) y en la galería de Windows Game Bar (Win+Alt+Impr Pant).
-                </p>
+                <p className="text-sm text-muted">{t('detail.noScreenshots')}</p>
               )}
             </Section>
           </div>
@@ -467,13 +468,13 @@ export function DetailView({
         {activeTab === 'videos' && (
           <div className="space-y-10">
             {videos.length > 0 ? (
-              <Section title="Vídeos y Tráilers">
+              <Section title={t('detail.videosTrailers')}>
                 <div className="max-w-3xl">
                   <div className="relative aspect-video w-full overflow-hidden border border-line bg-void">
                     {playId ? (
                       <iframe
                         src={`https://www.youtube-nocookie.com/embed/${playId}?autoplay=1&rel=0`}
-                        title="Tráiler"
+                        title={t('detail.trailer')}
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                         allowFullScreen
                         className="h-full w-full"
@@ -482,12 +483,12 @@ export function DetailView({
                       <button
                         onClick={() => setPlayId(videos[0])}
                         className="group h-full w-full"
-                        title="Reproducir tráiler"
+                        title={t('detail.playTrailer')}
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={`https://img.youtube.com/vi/${videos[0]}/hqdefault.jpg`}
-                          alt="Tráiler"
+                          alt={t('detail.trailer')}
                           className="h-full w-full object-cover opacity-80 transition group-hover:opacity-100"
                         />
                         <span className="absolute inset-0 grid place-items-center">
@@ -522,7 +523,7 @@ export function DetailView({
                 </div>
               </Section>
             ) : (
-              <p className="text-sm text-muted mt-8">No hay vídeos disponibles para este juego.</p>
+              <p className="text-sm text-muted mt-8">{t('detail.noVideos')}</p>
             )}
           </div>
         )}
@@ -532,17 +533,17 @@ export function DetailView({
           <div className="space-y-10">
             {/* Time to beat */}
             {ttb && (formatHours(ttb.hastily) || formatHours(ttb.normally) || formatHours(ttb.completely)) && (
-              <Section title="Duración (HowLongToBeat)">
+              <Section title={t('detail.duration')}>
                 <div className="grid max-w-2xl grid-cols-3 gap-3">
-                  <Metric label="Historia" value={formatHours(ttb.hastily) ?? '—'} />
-                  <Metric label="Normal" value={formatHours(ttb.normally) ?? '—'} />
-                  <Metric label="Al 100%" value={formatHours(ttb.completely) ?? '—'} />
+                  <Metric label={t('detail.story')} value={formatHours(ttb.hastily) ?? '—'} />
+                  <Metric label={t('detail.normal')} value={formatHours(ttb.normally) ?? '—'} />
+                  <Metric label={t('detail.hundred')} value={formatHours(ttb.completely) ?? '—'} />
                 </div>
               </Section>
             )}
 
             {/* Dynamic Generated Links */}
-            <Section title="Comunidades y Herramientas">
+            <Section title={t('detail.communities')}>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                 <a href={`https://www.pcgamingwiki.com/w/index.php?search=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                   <div className="text-accent"><GamepadIcon className="h-5 w-5" /></div>
@@ -585,10 +586,10 @@ export function DetailView({
 
             {/* Websites */}
             {details?.websites && details.websites.length > 0 && (
-              <Section title="Enlaces Oficiales (IGDB)">
+              <Section title={t('detail.officialLinks')}>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {details.websites.map((w) => {
-                    const info = mapWebsiteCategory(w.category);
+                    const info = mapWebsiteCategory(w.category, t);
                     return (
                       <a
                         key={w.url}
@@ -606,7 +607,7 @@ export function DetailView({
 
             {/* Similar games */}
             {similar.length > 0 && (
-              <Section title="Juegos recomendados (Similares)">
+              <Section title={t('detail.similarGames')}>
                 <div className="flex gap-4 overflow-x-auto pb-2">
                   {similar.map((s) => (
                     <div key={s.name} className="w-[120px] shrink-0" title={s.name}>
@@ -631,15 +632,15 @@ export function DetailView({
         {/* LOCAL */}
         {activeTab === 'local' && (
           <div className="space-y-10">
-            <Section title="Información en Disco">
+            <Section title={t('detail.diskInfo')}>
               <dl className="max-w-3xl divide-y divide-line text-sm border border-line p-4 bg-surface/30">
-                <Row label="Directorio de Instalación" value={game.install_dir ?? 'Desconocido'} />
-                {game.executable && <Row label="Ejecutable" value={game.executable} />}
+                <Row label={t('detail.installDir')} value={game.install_dir ?? t('detail.unknown')} />
+                {game.executable && <Row label={t('detail.executable')} value={game.executable} />}
                 <Row
-                  label="Tamaño en disco"
-                  value={size === undefined ? 'Calculando…' : size === null ? '—' : formatSize(size)}
+                  label={t('detail.diskSize')}
+                  value={size === undefined ? t('detail.calculating') : size === null ? '—' : formatSize(size)}
                 />
-                <Row label="Plataforma de origen" value={SOURCE_META[game.source]?.label ?? game.source} />
+                <Row label={t('detail.sourcePlatform')} value={SOURCE_META[game.source]?.label ?? game.source} />
               </dl>
               {game.install_dir && (
                 <button
@@ -647,7 +648,7 @@ export function DetailView({
                   className="mt-4 flex items-center gap-2 border border-line px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated"
                 >
                   <FolderIcon className="h-4 w-4 text-accent" />
-                  Abrir carpeta contenedora
+                  {t('detail.openContainingFolder')}
                 </button>
               )}
             </Section>
@@ -742,9 +743,9 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function mapWebsiteCategory(category: number): { name: string; icon: React.ReactNode } {
+function mapWebsiteCategory(category: number, t: T): { name: string; icon: React.ReactNode } {
   const map: Record<number, string> = {
-    1: 'Sitio Oficial',
+    1: t('detail.officialSite'),
     2: 'Wikia / Fandom',
     3: 'Wikipedia',
     4: 'Facebook',
@@ -764,7 +765,7 @@ function mapWebsiteCategory(category: number): { name: string; icon: React.React
   };
   // Fallback a un icono genérico de "Link" si no tenemos un SVG específico de esa red.
   return {
-    name: map[category] || 'Sitio Web',
+    name: map[category] || t('detail.website'),
     icon: <TagIcon className="h-4 w-4" />, // Reutilizamos TagIcon u otro como fallback para webs.
   };
 }

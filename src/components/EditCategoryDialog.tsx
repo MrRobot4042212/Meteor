@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { renameCategory, setCategoryIcon } from '@/lib/tauri';
 import { CATEGORY_ICONS, CATEGORY_ICON_KEYS } from '@/lib/categoryIcons';
 import type { Category } from '@/lib/types';
@@ -20,6 +21,7 @@ export function EditCategoryDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState(category.name);
   const [icon, setIcon] = useState<string | null>(category.icon ?? null);
   const [busy, setBusy] = useState(false);
@@ -61,7 +63,7 @@ export function EditCategoryDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-5 flex items-center justify-between">
-          <h2 className="font-display text-lg font-semibold text-ink">Editar categoría</h2>
+          <h2 className="font-display text-lg font-semibold text-ink">{t('dialog.editCategory')}</h2>
           <button
             onClick={onClose}
             className="grid h-8 w-8 shrink-0 place-items-center text-muted hover:bg-elevated hover:text-ink"
@@ -70,7 +72,7 @@ export function EditCategoryDialog({
           </button>
         </div>
 
-        <label className="mb-1.5 block text-xs font-medium text-muted">Nombre</label>
+        <label className="mb-1.5 block text-xs font-medium text-muted">{t('dialog.name')}</label>
         <input
           autoFocus
           value={name}
@@ -84,16 +86,14 @@ export function EditCategoryDialog({
           className="w-full border border-line bg-elevated px-3 py-2.5 text-sm text-ink outline-none placeholder:text-muted/60 focus:border-accent/60"
         />
         {merges && (
-          <p className="mt-2 text-xs text-info">
-            Ya existe «{name.trim()}»: se fusionarán en una sola.
-          </p>
+          <p className="mt-2 text-xs text-info">{t('dialog.mergeWarn', { name: name.trim() })}</p>
         )}
 
-        <label className="mb-1.5 mt-4 block text-xs font-medium text-muted">Icono</label>
+        <label className="mb-1.5 mt-4 block text-xs font-medium text-muted">{t('dialog.icon')}</label>
         <div className="grid grid-cols-8 gap-1.5">
           <button
             onClick={() => setIcon(null)}
-            title="Sin icono"
+            title={t('dialog.noIcon')}
             className={`grid aspect-square place-items-center border transition ${
               icon === null
                 ? 'border-accent bg-accent/15 text-ink'
@@ -126,14 +126,14 @@ export function EditCategoryDialog({
 
         <div className="mt-5 flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 text-sm text-muted hover:text-ink">
-            Cancelar
+            {t('common.cancel')}
           </button>
           <button
             onClick={commit}
             disabled={busy || !name.trim()}
             className="bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-soft disabled:opacity-50"
           >
-            {busy ? 'Guardando…' : 'Guardar'}
+            {busy ? t('dialog.saving') : t('common.save')}
           </button>
         </div>
       </div>
