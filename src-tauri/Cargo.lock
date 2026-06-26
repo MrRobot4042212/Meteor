@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "meteor"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "cc",
  "discord-rich-presence",
