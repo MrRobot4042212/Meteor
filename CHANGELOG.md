@@ -155,6 +155,18 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
   por defecto) mediante un formateador común (`lib/shortcuts.ts`): Footer,
   tutorial, Ajustes, panel de notificaciones y ajustes del overlay.
 
+### Eliminado
+- **Ficha de metadatos de IGDB en el detalle** (sinopsis, vídeos/tráileres, galería
+  promocional, géneros, temas, año, desarrollador/editor, nota, duración «time-to-beat»,
+  webs oficiales y juegos similares): se quita por completo la llamada `game_details`
+  (comando + `igdb::fetch_details` + `art::details` + cachés `details_cache*.json`) y el
+  módulo de traducción de sinopsis (`translate.rs` + `translate_cache.json`). `DetailView`
+  conserva **carátula, capturas propias** (Steam/Game Bar, no IGDB), **enlaces de
+  comunidades** (PCGamingWiki, Nexus, ProtonDB, HowLongToBeat… construidos del nombre, sin
+  red) y la **info local** (tamaño, tiempo jugado, sesiones). **Las carátulas de IGDB se
+  mantienen** (`resolve_cover`), que es una llamada aparte. Resultado: al abrir un juego ya
+  no se hace ninguna petición de ficha a IGDB ni a Google Translate.
+
 ### Corregido
 - **Overlay DirectComposition no iniciaba en GPUs AMD (HUD no aparecía)**: el swapchain
   de composición (`overlay_dcomp.rs`) se creaba con `Scaling: DXGI_SCALING_NONE`, que

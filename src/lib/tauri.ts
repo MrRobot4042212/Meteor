@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Game, Category, GameDetails, PlayStat, AppSettings, SystemInfo, MpoDiagnostics } from './types';
+import type { Game, Category, PlayStat, AppSettings, SystemInfo, MpoDiagnostics } from './types';
 
 /** Unified library across every source (Steam, Epic, GOG, EA, Ubisoft, Xbox, manual). */
 export const getLibrary = () => invoke<Game[]>('get_library');
@@ -81,11 +81,6 @@ export const removeCategory = (name: string) =>
 /** Persist the explicit category order (as shown in the sidebar). */
 export const setCategoryOrder = (names: string[]) =>
   invoke<void>('set_category_order', { names });
-
-/** Rich IGDB metadata for a game name (detail page). Null if no match. `lang` is
- *  the UI language so the summary comes back translated to it. */
-export const gameDetails = (name: string, lang: string) =>
-  invoke<GameDetails | null>('game_details', { name, lang });
 
 /** Accumulated play stats (seconds + last played) for a game id. */
 export const getPlaytime = (id: string) => invoke<PlayStat>('get_playtime', { id });

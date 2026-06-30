@@ -20,40 +20,6 @@ export interface Category {
   icon?: string | null;
 }
 
-/** A related game suggestion. */
-interface SimilarGame {
-  name: string;
-  cover_url?: string | null;
-}
-
-/** Time-to-beat in seconds (IGDB aggregated). */
-interface TimeToBeat {
-  hastily?: number | null;
-  normally?: number | null;
-  completely?: number | null;
-}
-
-/** Rich IGDB metadata for the detail page. */
-export interface GameDetails {
-  summary?: string | null;
-  rating?: number | null;
-  rating_count?: number | null;
-  release_year?: number | null;
-  genres: string[];
-  modes: string[];
-  developer?: string | null;
-  publisher?: string | null;
-  screenshots: string[];
-  themes?: string[];
-  perspectives?: string[];
-  franchise?: string | null;
-  artworks?: string[];
-  /** YouTube video ids for trailers. */
-  videos?: string[];
-  similar?: SimilarGame[];
-  time_to_beat?: TimeToBeat | null;
-  websites?: { category: number; url: string }[];
-}
 
 /** One finished play session (unix timestamps, seconds). */
 export interface Session {

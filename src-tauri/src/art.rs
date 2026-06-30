@@ -1,4 +1,4 @@
-use crate::igdb::{self, GameDetails};
+use crate::igdb;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -14,8 +14,6 @@ use tauri::{AppHandle, Manager};
 /// `resolve()` call during the parallel cover-pass, which hits the same file
 /// with concurrency-3 workers).
 static COVER_CACHE_MEM: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
-/// In-memory cache for IGDB detail lookups.
-static DETAILS_CACHE_MEM: Mutex<Option<HashMap<String, DetailEntry>>> = Mutex::new(None);
 
 /// Process-wide HTTP agent for cover downloads. Reuses TCP/TLS connections
 /// across all parallel downloads, cutting per-request handshake overhead.
@@ -31,10 +29,6 @@ fn agent() -> &'static ureq::Agent {
 }
 
 const CACHE_FILE: &str = "cover_cache.json";
-// v2: entries now store the original English summary (translation is per-language
-// at request time). The old `details_cache.json` baked Spanish in, so it's dropped.
-const DETAILS_CACHE_FILE: &str = "details_cache_v2.json";
-const LEGACY_DETAILS_CACHE_FILE: &str = "details_cache.json";
 const COVERS_DIR: &str = "covers";
 /// A "no cover found" result is only trusted for a while, then re-tried — so a
 /// transient network blip (or IGDB creds added later) self-heals.
@@ -100,113 +94,14 @@ pub fn resolve(app: &AppHandle, name: &str) -> Option<String> {
     }
 }
 
-/// One cached IGDB detail lookup: whether a match was found, the data, and when.
-#[derive(Clone, Serialize, Deserialize)]
-struct DetailEntry {
-    found: bool,
-    #[serde(default)]
-    details: GameDetails,
-    ts: u64,
-}
-
-/// Resolve rich metadata for a game by name via IGDB, cached on disk. Misses are
-/// only trusted for `NEGATIVE_TTL` so they self-heal. Returns `None` if no match.
-///
-/// The on-disk cache stores the **original English** summary (language-neutral);
-/// translation to `lang` happens per-request on the way out (cached separately by
-/// `translate.rs`), so the same cached entry serves every UI language.
-pub fn details(app: &AppHandle, name: &str, lang: &str) -> Option<GameDetails> {
-    let key = name.trim().to_lowercase();
-    if key.is_empty() {
-        return None;
-    }
-
-    // Base (English) details: from cache if present, else a fresh IGDB fetch that
-    // we store untranslated.
-    let mut base = {
-        let cache = load_details_cache(app);
-        match cache.get(&key) {
-            Some(entry) if entry.found => Some(entry.details.clone()),
-            Some(entry) if !is_stale(entry.ts) => return None, // recent miss
-            _ => None,
-        }
-    };
-
-    if base.is_none() {
-        let resolved = igdb::fetch_details(&name_variants(name));
-        let mut cache = load_details_cache(app);
-        cache.insert(
-            key,
-            DetailEntry {
-                found: resolved.is_some(),
-                details: resolved.clone().unwrap_or_default(),
-                ts: now(),
-            },
-        );
-        let _ = save_details_cache(app, &cache);
-        base = resolved;
-    }
-
-    let mut d = base?;
-    // Translate the English summary to the requested UI language (no-op for English).
-    if let Some(summary) = d.summary.as_ref().filter(|s| !s.trim().is_empty()) {
-        d.summary = Some(crate::translate::translate(app, summary, lang));
-    }
-    Some(d)
-}
-
-fn details_cache_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app_dir(app)?.join(DETAILS_CACHE_FILE))
-}
-
-fn load_details_cache(app: &AppHandle) -> HashMap<String, DetailEntry> {
-    // Fast path: return the in-memory snapshot if already populated.
-    {
-        let guard = DETAILS_CACHE_MEM.lock().unwrap();
-        if let Some(ref map) = *guard {
-            return map.clone();
-        }
-    }
-    // Cold start: read from disk and warm the in-memory cache.
-    let map: HashMap<String, DetailEntry> = details_cache_path(app)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default();
-    *DETAILS_CACHE_MEM.lock().unwrap() = Some(map.clone());
-    map
-}
-
-fn save_details_cache(app: &AppHandle, cache: &HashMap<String, DetailEntry>) -> Result<(), String> {
-    // Update in-memory cache so subsequent loads skip the disk.
-    *DETAILS_CACHE_MEM.lock().unwrap() = Some(cache.clone());
-    let path = details_cache_path(app)?;
-    let data = serde_json::to_string(cache).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
-}
-
 /// Drop the URL cache and every downloaded image (e.g. after the IGDB
 /// credentials change) so covers are resolved and re-fetched from scratch.
 pub fn clear_cache(app: &AppHandle) -> Result<(), String> {
-    // Invalidate in-memory caches so the next resolve() re-reads from disk (empty).
+    // Invalidate the in-memory cover cache so the next resolve() re-reads from disk.
     *COVER_CACHE_MEM.lock().unwrap() = None;
-    *DETAILS_CACHE_MEM.lock().unwrap() = None;
     if let Ok(path) = cache_path(app) {
         if path.exists() {
             fs::remove_file(&path).map_err(|e| e.to_string())?;
-        }
-    }
-    if let Ok(path) = details_cache_path(app) {
-        if path.exists() {
-            fs::remove_file(&path).map_err(|e| e.to_string())?;
-        }
-    }
-    // Also drop the legacy (Spanish-baked) details cache if it lingers.
-    if let Ok(dir) = app_dir(app) {
-        let legacy = dir.join(LEGACY_DETAILS_CACHE_FILE);
-        if legacy.exists() {
-            let _ = fs::remove_file(&legacy);
         }
     }
     if let Ok(dir) = covers_dir(app) {

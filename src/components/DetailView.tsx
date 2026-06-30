@@ -3,16 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
-import type { Game, GameDetails, PlayStat, Session } from '@/lib/types';
-import { gameDetails, getPlaytime, dirSize, openPath, userScreenshots } from '@/lib/tauri';
+import type { Game, PlayStat, Session } from '@/lib/types';
+import { getPlaytime, dirSize, openPath, userScreenshots } from '@/lib/tauri';
 import { coverSrc } from '@/lib/cover';
 import { SOURCE_META } from '@/lib/sources';
-import {
-  translateGenre,
-  translateMode,
-  translateTheme,
-  translatePerspective,
-} from '@/lib/i18n';
 import {
   ArrowLeftIcon,
   PlayIcon,
@@ -66,14 +60,6 @@ function formatLastPlayed(ts: number, t: T): string {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
-/** IGDB time-to-beat seconds → "12.5 h" / "45 min" (null if absent). */
-function formatHours(seconds?: number | null): string | null {
-  if (!seconds || seconds <= 0) return null;
-  const h = seconds / 3600;
-  if (h < 1) return `${Math.round(seconds / 60)} min`;
-  return h < 10 ? `${h.toFixed(1)} h` : `${Math.round(h)} h`;
-}
-
 export function DetailView({
   game,
   onBack,
@@ -95,33 +81,23 @@ export function DetailView({
   onRemove?: (g: Game) => void;
   onHide?: (g: Game) => void;
 }) {
-  const { t, i18n } = useTranslation();
-  const [details, setDetails] = useState<GameDetails | null | undefined>(undefined);
+  const { t } = useTranslation();
   const [play, setPlay] = useState<PlayStat>({ seconds: 0, history: [] });
   const [size, setSize] = useState<number | null | undefined>(undefined);
   const [shots, setShots] = useState<string[]>([]);
   const [shot, setShot] = useState<string | null>(null);
-  // Trailer currently playing (YouTube id), null = show the thumbnail.
-  const [playId, setPlayId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'galeria' | 'videos' | 'grial' | 'local'>('galeria');
+  const [activeTab, setActiveTab] = useState<'galeria' | 'grial' | 'local'>('galeria');
 
-  // Applications aren't games: skip all the IGDB metadata/media and screenshots.
+  // Applications aren't games: skip the screenshots + tabs section.
   const isApp = game.source === 'app';
 
   useEffect(() => {
     let alive = true;
-    setDetails(undefined);
     setShots([]);
-    setPlayId(null);
     getPlaytime(game.id)
       .then((p) => alive && setPlay(p))
       .catch(() => {});
-    if (isApp) {
-      setDetails(null); // no game metadata for apps
-    } else {
-      gameDetails(game.name, i18n.language)
-        .then((d) => alive && setDetails(d))
-        .catch(() => alive && setDetails(null));
+    if (!isApp) {
       // The user's own screenshots (Steam / Game Bar), not promotional art.
       userScreenshots(game)
         .then((s) => alive && setShots(s))
@@ -131,7 +107,7 @@ export function DetailView({
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.id, game.name, isApp, i18n.language]);
+  }, [game.id, game.name, isApp]);
 
   useEffect(() => {
     let alive = true;
@@ -160,17 +136,10 @@ export function DetailView({
 
   const logo = game.cover_url ? null : game.icon ? coverSrc(game.icon) ?? null : null;
   const cover = coverSrc(game.cover_url);
-  // Promotional artwork (IGDB) makes a richer backdrop than a user screenshot.
-  const art0 = details?.artworks?.[0] ?? details?.screenshots?.[0];
-  const backdrop = art0 ?? (shots[0] ? coverSrc(shots[0]) : undefined) ?? cover;
+  // A user screenshot makes a richer backdrop than the cover; else fall back to it.
+  const backdrop = (shots[0] ? coverSrc(shots[0]) : undefined) ?? cover;
   const meta = SOURCE_META[game.source];
   const SourceIcon = meta.Icon;
-
-  const videos = details?.videos ?? [];
-  const similar = (details?.similar ?? []).filter((s) => s.cover_url);
-  // IGDB promotional media (artworks first, then screenshots) for the gallery.
-  const gallery = [...(details?.artworks ?? []), ...(details?.screenshots ?? [])];
-  const ttb = details?.time_to_beat;
 
   return (
     <div data-tour="detail" className="relative h-full overflow-y-auto bg-background">
@@ -225,39 +194,6 @@ export function DetailView({
             <h1 className="font-display text-3xl font-bold leading-tight text-ink">
               {game.name}
             </h1>
-
-            {/* Meta row */}
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
-              {details?.release_year && <span>{details.release_year}</span>}
-              {details?.rating != null && (
-                <span className="text-ink">
-                  ★ {details.rating}/100
-                  {details.rating_count ? (
-                    <span className="text-muted"> ({details.rating_count})</span>
-                  ) : null}
-                </span>
-              )}
-              {details?.developer && <span>· {details.developer}</span>}
-            </div>
-
-            {/* Genres + themes */}
-            {((details?.genres?.length ?? 0) > 0 || (details?.themes?.length ?? 0) > 0) && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {details?.genres?.map((g) => (
-                  <span key={g} className="border border-line px-2 py-0.5 text-xs text-muted">
-                    {translateGenre(g)}
-                  </span>
-                ))}
-                {details?.themes?.map((t) => (
-                  <span
-                    key={t}
-                    className="border border-accent/30 bg-accent/5 px-2 py-0.5 text-xs text-muted"
-                  >
-                    {translateTheme(t)}
-                  </span>
-                ))}
-              </div>
-            )}
 
             {/* Actions */}
             <div className="mt-5 flex flex-wrap items-center gap-2">
@@ -327,7 +263,7 @@ export function DetailView({
         </div>
 
         {/* Activity metrics */}
-        <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <Metric label={t('home.timePlayed')} value={formatPlaytime(play.seconds, t)} icon={<ClockIcon className="h-4 w-4" />} />
           <Metric
             label={t('detail.last14')}
@@ -342,318 +278,131 @@ export function DetailView({
             label={t('detail.size')}
             value={size === undefined ? '…' : size === null ? '—' : formatSize(size)}
           />
-          <Metric
-            label={t('detail.modes')}
-            value={details?.modes?.length ? details.modes.map(translateMode).join(', ') : '—'}
-          />
         </div>
 
         {!isApp && (
           <>
-            {/* Summary */}
-            <Section title={t('detail.summary')}>
-          {details === undefined ? (
-            <p className="text-sm text-muted">{t('detail.loadingInfo')}</p>
-          ) : details?.summary ? (
-            <p className="max-w-3xl text-sm leading-relaxed text-ink/90">{details.summary}</p>
-          ) : (
-            <p className="text-sm text-muted">{t('detail.noDescription')}</p>
-          )}
-          {(details?.developer ||
-            details?.publisher ||
-            details?.franchise ||
-            (details?.perspectives?.length ?? 0) > 0) && (
-            <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-sm">
-              {details?.developer && (
-                <span className="text-muted">
-                  {t('detail.developer')}: <span className="text-ink">{details.developer}</span>
-                </span>
-              )}
-              {details?.publisher && (
-                <span className="text-muted">
-                  {t('detail.publisher')}: <span className="text-ink">{details.publisher}</span>
-                </span>
-              )}
-              {details?.franchise && (
-                <span className="text-muted">
-                  {t('detail.franchise')}: <span className="text-ink">{details.franchise}</span>
-                </span>
-              )}
-              {(details?.perspectives?.length ?? 0) > 0 && (
-                <span className="text-muted">
-                  {t('detail.perspective')}:{' '}
-                  <span className="text-ink">
-                    {details!.perspectives!.map(translatePerspective).join(', ')}
-                  </span>
-                </span>
-              )}
+            {/* Tabs navigation */}
+            <div className="mt-10 mb-6 flex overflow-x-auto border-b border-line">
+              {[
+                { id: 'galeria', label: t('detail.tabGallery') },
+                { id: 'grial', label: t('detail.tabGrail') },
+                { id: 'local', label: t('detail.tabLocal') },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as 'galeria' | 'grial' | 'local')}
+                  className={`whitespace-nowrap px-6 py-3 font-display text-sm font-semibold uppercase tracking-wide transition ${
+                    activeTab === tab.id
+                      ? 'border-b-2 border-accent text-accent'
+                      : 'text-muted hover:text-ink'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
-          )}
-        </Section>
 
-        {/* Tabs navigation */}
-        <div className="mt-10 mb-6 flex overflow-x-auto border-b border-line">
-          {[
-            { id: 'galeria', label: t('detail.tabGallery') },
-            { id: 'videos', label: t('detail.tabVideos') },
-            { id: 'grial', label: t('detail.tabGrail') },
-            { id: 'local', label: t('detail.tabLocal') },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`whitespace-nowrap px-6 py-3 font-display text-sm font-semibold uppercase tracking-wide transition ${
-                activeTab === tab.id
-                  ? 'border-b-2 border-accent text-accent'
-                  : 'text-muted hover:text-ink'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* GALERÍA */}
-        {activeTab === 'galeria' && (
-          <div className="space-y-10">
-            {gallery.length > 0 && (
-              <Section title={t('detail.promoMedia')}>
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-                  {gallery.map((src) => (
-                    <button
-                      key={src}
-                      onClick={() => setShot(src)}
-                      className="group overflow-hidden border border-line bg-elevated"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={src}
-                        alt=""
-                        loading="lazy"
-                        className="aspect-video w-full object-cover transition group-hover:scale-105"
-                      />
-                    </button>
-                  ))}
-                </div>
-              </Section>
-            )}
-
-            <Section title={t('detail.myScreenshots')}>
-              {shots.length > 0 ? (
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-                  {shots.map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => setShot(s)}
-                      className="group overflow-hidden border border-line bg-elevated"
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={coverSrc(s)}
-                        alt=""
-                        loading="lazy"
-                        className="aspect-video w-full object-cover transition group-hover:scale-105"
-                      />
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-muted">{t('detail.noScreenshots')}</p>
-              )}
-            </Section>
-          </div>
-        )}
-
-        {/* VÍDEOS */}
-        {activeTab === 'videos' && (
-          <div className="space-y-10">
-            {videos.length > 0 ? (
-              <Section title={t('detail.videosTrailers')}>
-                <div className="max-w-3xl">
-                  <div className="relative aspect-video w-full overflow-hidden border border-line bg-void">
-                    {playId ? (
-                      <iframe
-                        src={`https://www.youtube-nocookie.com/embed/${playId}?autoplay=1&rel=0`}
-                        title={t('detail.trailer')}
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                        className="h-full w-full"
-                      />
-                    ) : (
-                      <button
-                        onClick={() => setPlayId(videos[0])}
-                        className="group h-full w-full"
-                        title={t('detail.playTrailer')}
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={`https://img.youtube.com/vi/${videos[0]}/hqdefault.jpg`}
-                          alt={t('detail.trailer')}
-                          className="h-full w-full object-cover opacity-80 transition group-hover:opacity-100"
-                        />
-                        <span className="absolute inset-0 grid place-items-center">
-                          <span className="grid h-16 w-16 place-items-center bg-accent/90 text-white shadow-glow transition group-hover:scale-110">
-                            <PlayIcon className="h-7 w-7" />
-                          </span>
-                        </span>
-                      </button>
-                    )}
-                  </div>
-                  {videos.length > 1 && (
-                    <div className="mt-3 flex gap-2 overflow-x-auto pb-2">
-                      {videos.map((v) => (
+            {/* GALERÍA: the user's own captures (Steam / Game Bar). */}
+            {activeTab === 'galeria' && (
+              <div className="space-y-10">
+                <Section title={t('detail.myScreenshots')}>
+                  {shots.length > 0 ? (
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                      {shots.map((s) => (
                         <button
-                          key={v}
-                          onClick={() => setPlayId(v)}
-                          className={`relative aspect-video w-28 shrink-0 overflow-hidden border transition ${
-                            playId === v ? 'border-accent' : 'border-line hover:border-accent/50'
-                          }`}
+                          key={s}
+                          onClick={() => setShot(s)}
+                          className="group overflow-hidden border border-line bg-elevated"
                         >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
-                            src={`https://img.youtube.com/vi/${v}/mqdefault.jpg`}
+                            src={coverSrc(s)}
                             alt=""
                             loading="lazy"
-                            className="h-full w-full object-cover"
+                            className="aspect-video w-full object-cover transition group-hover:scale-105"
                           />
                         </button>
                       ))}
                     </div>
+                  ) : (
+                    <p className="text-sm text-muted">{t('detail.noScreenshots')}</p>
                   )}
-                </div>
-              </Section>
-            ) : (
-              <p className="text-sm text-muted mt-8">{t('detail.noVideos')}</p>
-            )}
-          </div>
-        )}
-
-        {/* SANTO GRIAL */}
-        {activeTab === 'grial' && (
-          <div className="space-y-10">
-            {/* Time to beat */}
-            {ttb && (formatHours(ttb.hastily) || formatHours(ttb.normally) || formatHours(ttb.completely)) && (
-              <Section title={t('detail.duration')}>
-                <div className="grid max-w-2xl grid-cols-3 gap-3">
-                  <Metric label={t('detail.story')} value={formatHours(ttb.hastily) ?? '—'} />
-                  <Metric label={t('detail.normal')} value={formatHours(ttb.normally) ?? '—'} />
-                  <Metric label={t('detail.hundred')} value={formatHours(ttb.completely) ?? '—'} />
-                </div>
-              </Section>
-            )}
-
-            {/* Dynamic Generated Links */}
-            <Section title={t('detail.communities')}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                <a href={`https://www.pcgamingwiki.com/w/index.php?search=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><GamepadIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">PCGamingWiki</div>
-                </a>
-                <a href={`https://www.nexusmods.com/search/?gsearch=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><GearIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">Nexus Mods</div>
-                </a>
-                <a href={`https://www.protondb.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><AppIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">ProtonDB</div>
-                </a>
-                <a href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' wiki fandom')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><GlobeIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">Wiki / Fandom</div>
-                </a>
-                <a href={`https://www.youtube.com/results?search_query=${encodeURIComponent(game.name + ' gameplay')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><YoutubeIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">YouTube (Gameplay)</div>
-                </a>
-                <a href={`https://www.twitch.tv/directory/search?term=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><TwitchIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">Twitch</div>
-                </a>
-                <a href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' subreddit')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><RedditIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">Reddit</div>
-                </a>
-                <a href={`https://www.speedrun.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><ZapIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">Speedrun.com</div>
-                </a>
-                <a href={`https://howlongtobeat.com/?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
-                  <div className="text-accent"><ClockIcon className="h-5 w-5" /></div>
-                  <div className="min-w-0 flex-1 truncate font-medium">HowLongToBeat</div>
-                </a>
+                </Section>
               </div>
-            </Section>
-
-            {/* Websites */}
-            {details?.websites && details.websites.length > 0 && (
-              <Section title={t('detail.officialLinks')}>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  {details.websites.map((w) => {
-                    const info = mapWebsiteCategory(w.category, t);
-                    return (
-                      <a
-                        key={w.url}
-                        href={w.url}
-                        className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80"
-                      >
-                        <div className="text-accent">{info.icon}</div>
-                        <div className="min-w-0 flex-1 truncate font-medium">{info.name}</div>
-                      </a>
-                    );
-                  })}
-                </div>
-              </Section>
             )}
 
-            {/* Similar games */}
-            {similar.length > 0 && (
-              <Section title={t('detail.similarGames')}>
-                <div className="flex gap-4 overflow-x-auto pb-2">
-                  {similar.map((s) => (
-                    <div key={s.name} className="w-[120px] shrink-0" title={s.name}>
-                      <div className="aspect-[2/3] overflow-hidden border border-line bg-elevated">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={s.cover_url as string}
-                          alt={s.name}
-                          loading="lazy"
-                          className="h-full w-full object-cover"
-                        />
-                      </div>
-                      <p className="mt-1.5 line-clamp-2 text-xs text-muted">{s.name}</p>
-                    </div>
-                  ))}
-                </div>
-              </Section>
+            {/* SANTO GRIAL: external search links (no API, built from the game name). */}
+            {activeTab === 'grial' && (
+              <div className="space-y-10">
+                <Section title={t('detail.communities')}>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    <a href={`https://www.pcgamingwiki.com/w/index.php?search=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><GamepadIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">PCGamingWiki</div>
+                    </a>
+                    <a href={`https://www.nexusmods.com/search/?gsearch=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><GearIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">Nexus Mods</div>
+                    </a>
+                    <a href={`https://www.protondb.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><AppIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">ProtonDB</div>
+                    </a>
+                    <a href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' wiki fandom')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><GlobeIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">Wiki / Fandom</div>
+                    </a>
+                    <a href={`https://www.youtube.com/results?search_query=${encodeURIComponent(game.name + ' gameplay')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><YoutubeIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">YouTube (Gameplay)</div>
+                    </a>
+                    <a href={`https://www.twitch.tv/directory/search?term=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><TwitchIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">Twitch</div>
+                    </a>
+                    <a href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' subreddit')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><RedditIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">Reddit</div>
+                    </a>
+                    <a href={`https://www.speedrun.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><ZapIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">Speedrun.com</div>
+                    </a>
+                    <a href={`https://howlongtobeat.com/?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                      <div className="text-accent"><ClockIcon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1 truncate font-medium">HowLongToBeat</div>
+                    </a>
+                  </div>
+                </Section>
+              </div>
             )}
-          </div>
-        )}
 
-        {/* LOCAL */}
-        {activeTab === 'local' && (
-          <div className="space-y-10">
-            <Section title={t('detail.diskInfo')}>
-              <dl className="max-w-3xl divide-y divide-line text-sm border border-line p-4 bg-surface/30">
-                <Row label={t('detail.installDir')} value={game.install_dir ?? t('detail.unknown')} />
-                {game.executable && <Row label={t('detail.executable')} value={game.executable} />}
-                <Row
-                  label={t('detail.diskSize')}
-                  value={size === undefined ? t('detail.calculating') : size === null ? '—' : formatSize(size)}
-                />
-                <Row label={t('detail.sourcePlatform')} value={SOURCE_META[game.source]?.label ?? game.source} />
-              </dl>
-              {game.install_dir && (
-                <button
-                  onClick={() => openPath(game.install_dir as string)}
-                  className="mt-4 flex items-center gap-2 border border-line px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated"
-                >
-                  <FolderIcon className="h-4 w-4 text-accent" />
-                  {t('detail.openContainingFolder')}
-                </button>
-              )}
-            </Section>
-          </div>
-        )}
+            {/* LOCAL */}
+            {activeTab === 'local' && (
+              <div className="space-y-10">
+                <Section title={t('detail.diskInfo')}>
+                  <dl className="max-w-3xl divide-y divide-line text-sm border border-line p-4 bg-surface/30">
+                    <Row label={t('detail.installDir')} value={game.install_dir ?? t('detail.unknown')} />
+                    {game.executable && <Row label={t('detail.executable')} value={game.executable} />}
+                    <Row
+                      label={t('detail.diskSize')}
+                      value={size === undefined ? t('detail.calculating') : size === null ? '—' : formatSize(size)}
+                    />
+                    <Row label={t('detail.sourcePlatform')} value={SOURCE_META[game.source]?.label ?? game.source} />
+                  </dl>
+                  {game.install_dir && (
+                    <button
+                      onClick={() => openPath(game.install_dir as string)}
+                      className="mt-4 flex items-center gap-2 border border-line px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated"
+                    >
+                      <FolderIcon className="h-4 w-4 text-accent" />
+                      {t('detail.openContainingFolder')}
+                    </button>
+                  )}
+                </Section>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -741,31 +490,4 @@ function Row({ label, value }: { label: string; value: string }) {
       <dd className="min-w-0 flex-1 break-all text-ink/90">{value}</dd>
     </div>
   );
-}
-
-function mapWebsiteCategory(category: number, t: T): { name: string; icon: React.ReactNode } {
-  const map: Record<number, string> = {
-    1: t('detail.officialSite'),
-    2: 'Wikia / Fandom',
-    3: 'Wikipedia',
-    4: 'Facebook',
-    5: 'Twitter',
-    6: 'Twitch',
-    8: 'Instagram',
-    9: 'YouTube',
-    10: 'iPhone',
-    11: 'iPad',
-    12: 'Android',
-    13: 'Steam',
-    14: 'Reddit',
-    15: 'Itch.io',
-    16: 'Epic Games',
-    17: 'GOG',
-    18: 'Discord',
-  };
-  // Fallback a un icono genérico de "Link" si no tenemos un SVG específico de esa red.
-  return {
-    name: map[category] || t('detail.website'),
-    icon: <TagIcon className="h-4 w-4" />, // Reutilizamos TagIcon u otro como fallback para webs.
-  };
 }

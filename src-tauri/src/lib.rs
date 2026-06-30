@@ -32,7 +32,6 @@ mod storage;
 #[cfg(windows)]
 mod sysstat;
 mod system;
-mod translate;
 mod ubisoft;
 mod windows_apps;
 mod xbox;
@@ -351,13 +350,6 @@ fn rename_category(app: AppHandle, old: String, new: String) -> Result<(), Strin
 #[tauri::command]
 fn set_category_order(app: AppHandle, names: Vec<String>) -> Result<(), String> {
     storage::set_category_order(&app, &names)
-}
-
-/// Rich IGDB metadata for the detail page (summary, genres, rating, shots…). The
-/// `lang` is the UI language; the summary is translated to it on the way out.
-#[tauri::command]
-fn game_details(app: AppHandle, name: String, lang: String) -> Result<Option<igdb::GameDetails>, String> {
-    Ok(art::details(&app, &name, &lang))
 }
 
 /// Accumulated play stats (seconds + last played) for a game id.
@@ -901,7 +893,6 @@ pub fn run() {
             remove_category,
             rename_category,
             set_category_order,
-            game_details,
             get_playtime,
             all_playtime,
             cached_library,
