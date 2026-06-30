@@ -56,18 +56,13 @@ aporta juegos (no rompe el resto). La lista se mezcla y se deduplica por nombre.
 
 Todas las carátulas (de cualquier tienda, Steam incluido) se obtienen de **IGDB**.
 Meteor busca por nombre (probando variantes para absorber símbolos y ediciones),
-prefiere la coincidencia exacta y usa la portada vertical de IGDB. IGDB va por la
-API de Twitch, así que necesitas un **Client ID + Client Secret** (gratis, en
-`dev.twitch.tv/console/apps`) y pegarlos en *Ajustes*.
+prefiere la coincidencia exacta y usa la portada vertical de IGDB
 
 Las imágenes se **descargan y guardan en disco** (`covers/`) la primera vez, así
 que a partir de ahí cargan al instante, sin red y sin volver a llamar a la API
 (la URL también se cachea en `cover_cache.json`). Los fallos se reintentan pasado
 un tiempo, así que las carátulas que falten no se quedan vacías para siempre.
 
-¿Una carátula sigue sin salir o no es la correcta? Pasa el ratón por encima de la
-card y pulsa el icono de imagen para **ponerle una a mano** (override que gana
-sobre la automática). Las credenciales de Twitch/IGDB se guardan en `settings.json`.
 
 ## Estructura
 
