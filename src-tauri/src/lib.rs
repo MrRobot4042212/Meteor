@@ -16,6 +16,12 @@ mod igdb;
 mod launcher;
 mod metrics;
 mod models;
+#[cfg(windows)]
+mod overlay;
+#[cfg(windows)]
+mod overlay_dcomp;
+#[cfg(windows)]
+mod overlay_native;
 mod playtime;
 mod presentmon;
 mod screenshots;
@@ -587,9 +593,10 @@ fn layout_overlay(w: &tauri::WebviewWindow, corner: &str, fullscreen: bool) {
     let _ = w.set_position(PhysicalPosition::new(x, y));
 }
 
-/// Apply the overlay config live: update the sampler and, when disabling, hide the
-/// overlay window immediately and tell it to refresh its config.
-fn apply_overlay_settings(app: &AppHandle, settings: &AppSettings) {
+/// Apply the overlay config live: update the sampler and snapshot the full config
+/// for the native HUD renderer. The native HUD (drawn by the sampler) reflects this
+/// on its next tick; when `enabled` is false the sampler hides it.
+fn apply_overlay_settings(_app: &AppHandle, settings: &AppSettings) {
     let fps_wanted = settings.overlay.show_fps || settings.overlay.show_frametime;
     metrics::configure(
         settings.overlay.enabled,
@@ -598,16 +605,9 @@ fn apply_overlay_settings(app: &AppHandle, settings: &AppSettings) {
         settings.overlay.show_cpu_temp,
     );
     metrics::set_gpu(settings.overlay.gpu.clone());
-    if let Some(w) = app.get_webview_window("overlay") {
-        if settings.overlay.enabled {
-            // Re-place the HUD box: the chosen corner may have changed.
-            layout_overlay(&w, &settings.overlay.position, false);
-        } else {
-            let _ = w.hide();
-        }
-    }
-    // The overlay window re-reads settings (position, which metrics) on this event.
-    let _ = app.emit_to("overlay", "overlay-config", ());
+    // Snapshot the full overlay config (colors, position, font size, opacity, which
+    // metrics) so the native HUD renderer reads it each tick.
+    metrics::set_render_cfg(settings.overlay.clone());
 }
 
 /// Toggle the overlay on/off (the global hotkey). Persists and applies live.
@@ -621,21 +621,26 @@ fn toggle_overlay(app: &AppHandle) {
     }
 }
 
-/// Make the overlay window interactive (receives mouse clicks) or click-through.
+/// Open or close the in-game overlay *settings* screen (the WebView2 `overlay`
+/// window). While open it covers the monitor and takes input; the native HUD hides
+/// (the sampler gates on `set_settings_open`) so the two overlays don't fight for
+/// the z-order. When closed, the window is hidden again.
 #[tauri::command]
 fn set_overlay_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
+    metrics::set_settings_open(interactive);
     if let Some(w) = app.get_webview_window("overlay") {
         w.set_ignore_cursor_events(!interactive)
             .map_err(|e| e.to_string())?;
-        // The settings screen needs the whole monitor; the bare HUD must shrink
-        // back to a small corner box so it doesn't break the game's flip path.
         let corner = app
             .try_state::<std::sync::Mutex<AppSettings>>()
             .map(|s| s.lock().unwrap().overlay.position.clone())
             .unwrap_or_else(|| "top-left".into());
         layout_overlay(&w, &corner, interactive);
         if interactive {
+            let _ = w.show();
             let _ = w.set_focus();
+        } else {
+            let _ = w.hide();
         }
     }
     Ok(())
@@ -728,9 +733,8 @@ pub fn run() {
                     if Some(*shortcut) == toggle_s {
                         toggle_overlay(app);
                     } else if Some(*shortcut) == settings_s {
-                        if let Some(w) = app.get_webview_window("overlay") {
-                            let _ = w.show();
-                        }
+                        // The overlay webview toggles its settings screen and calls
+                        // set_overlay_interactive, which shows/hides + sizes the window.
                         let _ = app.emit_to("overlay", "toggle-overlay-settings", ());
                     } else if Some(*shortcut) == spot_s {
                         show_main(app);
@@ -752,6 +756,8 @@ pub fn run() {
                 settings.overlay.show_cpu_temp,
             );
             metrics::set_gpu(settings.overlay.gpu.clone());
+            // Snapshot the full overlay config for the native HUD renderer.
+            metrics::set_render_cfg(settings.overlay.clone());
             app.manage(std::sync::Mutex::new(settings.clone()));
 
             // Full-screen transparent, click-through, always-on-top overlay window

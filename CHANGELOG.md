@@ -45,6 +45,47 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
     re-pide al cambiarlo. La caché v1 (español horneado) se descarta. **i18n 100%.**
 
 ### Cambiado
+- **Overlay solo DirectComposition: eliminado el fallback GDI (decisión de rendimiento)**:
+  tras testeo profundo, una ventana GDI `UpdateLayeredWindow` **nunca** es elegible para MPO,
+  así que siempre saca al juego de *independent-flip* → input lag. Era el peor caso justo
+  cuando más dolía. Ahora el HUD es **solo DComp**: si DComp no inicializa, el HUD se
+  **desactiva** en vez de caer a GDI (no se entrega un overlay garantizado-laggy). Se
+  borró toda la maquinaria GDI del HUD de `overlay_native.rs`, que queda reducido a los
+  helpers de ventana en primer plano. Además: **restaurado el gate de foco** (un
+  diagnóstico lo dejó dibujando sobre el escritorio con el juego en segundo plano) y
+  **eliminado el log de depuración por tick** del sampler y de DComp. Coste residual del
+  overlay = NVML+sysinfo a 1 s + un *present* por segundo en plano hardware cuando hay MPO
+  ≈ cero; donde DWM deniega MPO, la composición es inevitable para cualquier ventana sobre
+  el juego (límite de DWM, no del código).
+- **HUD del overlay reescrito a una ventana nativa (mucho más ligero)**: el HUD ya
+  **no es WebView2**. Un overlay de Chromium transparente corría su propio proceso
+  GPU compitiendo con el juego y forzaba composición de DWM (input lag, sensación de
+  bajo framerate). Ahora se pinta en una **ventana Win32 *layered* nativa**
+  (`overlay_native.rs`): dibujo GDI a un **DIB ARGB de 32 bits** + `UpdateLayeredWindow`,
+  *content-sized*, sin redirection bitmap → compone al mínimo y es *MPO-friendly*, así
+  el juego conserva su ruta de baja latencia. El sampler (`metrics.rs`) dibuja el HUD
+  directo en vez de emitir eventos a un webview. La **pantalla de ajustes in-game**
+  sigue en el WebView2 `overlay` (visible solo al abrirla; el HUD nativo se oculta
+  mientras tanto vía `set_settings_open`).
+- **Overlay hiperligero: backend DirectComposition + flip swapchain (MPO real)**: el
+  HUD GDI-`UpdateLayeredWindow` es ciudadano MPO de segunda (DWM lo compone por la ruta
+  de *redirection*). Nuevo backend `overlay_dcomp.rs` que dibuja con **DirectComposition
+  + DXGI flip swapchain + Direct2D/DirectWrite** — la superficie que DWM **promociona a
+  plano hardware (MPO)**, así el juego conserva *independent-flip* y el overlay no añade
+  composición ni input lag. Un facade `overlay.rs` elige DComp y, si el init D3D/DComp
+  falla, **desactiva el HUD** (sin fallback GDI, ver más abajo). Mejoras transversales: **present-on-change** (no se
+  redibuja si el texto no cambió), reposición de ventana solo si cambia, y constructor de
+  filas **compartido** entre ambos backends (la lista de métricas no diverge). Sin crates
+  nuevas: solo features del crate `windows` ya presente.
+- **HUD solo cuando el juego está en foco**: el sampler ya solo dibuja (y muestrea) si la
+  ventana del juego es la de **primer plano**. Al hacer alt-tab, el HUD se oculta y el
+  sampler entra en reposo — antes componía un topmost sobre el escritorio para nada (el
+  conteo de tiempo de juego sigue igual).
+- **FPS en NVIDIA solo con admin (sin intentos en vacío)**: PresentMon (ETW) exige
+  elevación, que no cambia en runtime, así que ahora se comprueba **una vez** al arrancar
+  el controlador: sin admin **no se intenta lanzar nunca** (cero overhead, cero *access
+  denied*). En AMD el FPS lo da ADLX sin admin igualmente. Resultado: hiperligero por
+  defecto en ambos vendors.
 - **Atajos globales por defecto**: ahora **F9** (Spotlight), **F10** (alternar
   overlay) y **F11** (ajustes del overlay), en lugar de combinaciones con Ctrl+Shift.
 - La UI muestra siempre el **atajo real** (el personalizado del usuario o el
@@ -52,6 +93,33 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
   tutorial, Ajustes, panel de notificaciones y ajustes del overlay.
 
 ### Corregido
+- **Panic en debug de sysinfo que tumbaba el watcher de playtime (y con él el overlay)**:
+  sysinfo 0.30 hace `process_times/10_000_000 - 11_644_473_600` sin proteger la resta; si
+  `GetProcessTimes` falla en un proceso protegido (queda 0), hay **underflow**. En release
+  solo *wrap* (overflow-checks off → `start_time` basura que no leemos), pero en **debug
+  hacía panic** y mataba el hilo del watcher — que es quien publica el juego al overlay, así
+  que el HUD dejaba de aparecer. Fix: `[profile.dev.package.sysinfo] overflow-checks = false`
+  (mismo comportamiento que release, solo para ese crate; nuestro código conserva los
+  checks). Actualizar a 0.33.1 no servía: arrastra la misma resta.
+- **Input lag del overlay en juegos *borderless* (clave)**: el HUD nativo llamaba a
+  `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` para no salir en grabaciones, pero
+  la *display affinity* mete la ventana en la composición protegida de DWM y la
+  **descalifica de MPO**. Sin MPO, una ventana *topmost* sobre un juego borderless saca
+  a DWM de *independent-flip* y lo pasa a *composed-flip* → input lag y sensación de
+  bajo framerate. Se elimina la llamada: el HUD vuelve a ser candidato a plano hardware
+  (MPO) y el juego conserva su ruta de baja latencia. **Trade-off**: el HUD ahora sí
+  aparece en capturas/grabaciones.
+- **PresentMon dejaba de reintentar en bucle sin admin (golpea a NVIDIA)**: si
+  PresentMon fallaba al lanzarse (ETW exige admin → *access denied*) o moría enseguida
+  con el juego aún abierto, el controlador **reintentaba `CreateProcess` cada 500 ms**
+  durante toda la partida = hitches. Afecta sobre todo a NVIDIA, donde PresentMon es la
+  **única** fuente de FPS. Ahora recuerda el PID fallido (`failed_pid`) y no reintenta
+  hasta que cambia el juego.
+- **PresentMon ya no corre en GPUs AMD**: con AMD el FPS lo da **ADLX** nativo (sin
+  admin), pero PresentMon se lanzaba igual (sesión ETW + parseo CSV por frame) para un
+  dato que se descartaba. Ahora el sampler marca `ADLX_FPS_ACTIVE` cuando ADLX entrega
+  FPS y la puerta `want_fps()` deja PresentMon **en reposo**; si se selecciona una GPU
+  NVML o ADLX deja de dar FPS, PresentMon retoma.
 - **Autostart no arrancaba con admin permanente**: si el instalador marcaba Meteor
   como administrador (flag `RUNASADMIN`) y se activaba el inicio con Windows, no
   arrancaba. Causa: el autostart usaba la clave `HKCU\...\Run`, que Windows
@@ -65,6 +133,13 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
   borderless/ventana), añadiendo 1–2 frames de latencia pese a tener FPS altos.
   Ahora el overlay es una **caja pequeña pegada a la esquina** y solo se agranda a
   pantalla completa al abrir sus ajustes.
+- **Input lag y stutter del overlay (2ª pasada)**: dos causas más, resueltas.
+  (1) La ventana usaba una caja **fija de 340×400** aunque el HUD ocupara mucho
+  menos; ahora se **redimensiona al tamaño real del HUD**, minimizando la superficie
+  compuesta y favoreciendo que DWM la **promueva a un plano hardware (MPO)**. (2) El
+  overlay re-aseraba *topmost* (toggle `NOTOPMOST→TOPMOST`) **en cada tick**, forzando
+  recomposición de DWM y *stutter periódico*; ahora solo re-asierta cuando **cambia la
+  ventana en primer plano** (`metrics.rs`, gate por `last_fg`).
 
 ---
 

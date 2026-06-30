@@ -154,10 +154,32 @@ fn parse_stdout(out: impl std::io::Read) {
 /// game is running; it (re)targets PresentMon at the current game's PID.
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
+        // PresentMon's ETW realtime session requires admin. Elevation can't change at
+        // runtime, so check once: when not elevated we never even attempt to spawn it
+        // (no access-denied spam, no overhead). FPS on NVIDIA therefore only appears
+        // when Meteor is already running as admin; AMD gets FPS from ADLX regardless.
+        let elevated = {
+            #[cfg(windows)]
+            {
+                crate::elevation::is_elevated()
+            }
+            #[cfg(not(windows))]
+            {
+                false
+            }
+        };
+        if !elevated {
+            return;
+        }
         let mut child: Option<Child> = None;
         let mut child_pid: u32 = 0;
         // Once we fail to find the binary, stop retrying every tick (logged once).
         let mut bin_missing_logged = false;
+        // PID we already failed to attach to (no admin → ETW access denied, or no
+        // binary). Without this we'd respawn PresentMon.exe every 500ms for the whole
+        // session — a real hitch source for users without elevation (esp. NVIDIA,
+        // where PresentMon is the only FPS source). Cleared when the target changes.
+        let mut failed_pid: u32 = 0;
 
         loop {
             std::thread::sleep(Duration::from_millis(500));
@@ -168,8 +190,14 @@ pub fn start(app: AppHandle) {
                 0
             };
 
-            // Target changed (new game / stopped): tear down the old instance.
-            if want_pid != child_pid {
+            // A new target clears the previous failure so the new game gets a try.
+            if want_pid != failed_pid {
+                failed_pid = 0;
+            }
+
+            // Target changed (new game / stopped): tear down the old instance. Skip
+            // re-attempting a PID we already failed on (failed_pid) to avoid respawning.
+            if want_pid != child_pid && want_pid != failed_pid {
                 if let Some(mut c) = child.take() {
                     let _ = c.kill();
                 }
@@ -184,11 +212,15 @@ pub fn start(app: AppHandle) {
                                 child_pid = want_pid;
                             }
                             Err(e) => {
-                                // Typically "access denied" without elevation.
+                                // Typically "access denied" without elevation. Mark the
+                                // PID failed so we don't hammer respawns every tick.
                                 eprintln!("PresentMon no pudo iniciarse: {e}");
+                                failed_pid = want_pid;
                             }
                         },
                         None => {
+                            // No binary: don't re-scan the filesystem every tick either.
+                            failed_pid = want_pid;
                             if !bin_missing_logged {
                                 eprintln!(
                                     "PresentMon.exe no encontrado: FPS/frametime deshabilitados."
@@ -203,9 +235,16 @@ pub fn start(app: AppHandle) {
             // Reap a child that exited on its own (game closed, ETW denied, …).
             if let Some(c) = &mut child {
                 if matches!(c.try_wait(), Ok(Some(_))) {
+                    let dead = child_pid;
                     child = None;
                     child_pid = 0;
                     reset();
+                    // If the game is still running, PresentMon died by itself (e.g. ETW
+                    // denied at runtime) — mark the PID failed so we don't respawn every
+                    // tick. If the game closed (want_pid changed), this is just cleanup.
+                    if dead != 0 && want_pid == dead {
+                        failed_pid = dead;
+                    }
                 }
             }
         }

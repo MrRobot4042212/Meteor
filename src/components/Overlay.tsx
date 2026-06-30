@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { getAppSettings, setOverlayInteractive } from '@/lib/tauri';
+import { setOverlayInteractive } from '@/lib/tauri';
 import type { MetricsSample, OverlaySettings } from '@/lib/types';
 import { OverlaySettingsScreen } from './OverlaySettingsScreen';
 
@@ -137,29 +137,20 @@ export function OverlayPanel({
 }
 
 /**
- * The in-game metrics HUD. Rendered in the dedicated transparent, click-through
- * `overlay` window (see `page.tsx` window-label branch). Listens for telemetry
- * samples from the Rust sampler and paints a compact panel in the chosen corner.
+ * Host for the in-game overlay *settings* screen. The HUD itself is now drawn by a
+ * native layered window from Rust (`overlay_native.rs`) for minimal latency, so this
+ * WebView2 window only mounts the settings screen — shown on the settings hotkey
+ * (`toggle-overlay-settings`), which also makes the window visible + interactive via
+ * `setOverlayInteractive`.
  */
 export function Overlay() {
-  const [m, setM] = useState<MetricsSample | null>(null);
-  const [cfg, setCfg] = useState<OverlaySettings | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
-    // The overlay window must be see-through; force the document transparent
-    // (globals.css paints an opaque background on the main window).
+    // The overlay window must be see-through (globals.css paints an opaque bg).
     document.documentElement.style.background = 'transparent';
     document.body.style.background = 'transparent';
 
-    const loadCfg = () =>
-      getAppSettings()
-        .then((s) => setCfg(s.overlay))
-        .catch(() => {});
-    loadCfg();
-
-    const unSample = listen<MetricsSample>('metrics-sample', (e) => setM(e.payload));
-    const unCfg = listen('overlay-config', loadCfg);
     const unSettings = listen('toggle-overlay-settings', () => {
       setShowSettings((prev) => {
         const next = !prev;
@@ -169,33 +160,18 @@ export function Overlay() {
     });
 
     return () => {
-      unSample.then((f) => f());
-      unCfg.then((f) => f());
       unSettings.then((f) => f());
     };
   }, []);
 
-  if (!cfg) return null;
-  if (!m && !showSettings) return null;
+  if (!showSettings) return null;
 
   return (
-    <>
-      {m && (
-        <div
-          className={`pointer-events-none fixed ${OVERLAY_CORNER[cfg.position] ?? OVERLAY_CORNER['top-left']} select-none`}
-        >
-          <OverlayPanel cfg={cfg} sample={m} />
-        </div>
-      )}
-      
-      {showSettings && (
-        <OverlaySettingsScreen
-          onClose={() => {
-            setShowSettings(false);
-            setOverlayInteractive(false).catch(() => {});
-          }}
-        />
-      )}
-    </>
+    <OverlaySettingsScreen
+      onClose={() => {
+        setShowSettings(false);
+        setOverlayInteractive(false).catch(() => {});
+      }}
+    />
   );
 }

@@ -167,7 +167,8 @@ export interface SystemInfo {
   displays: DisplayInfo[];
 }
 
-/** One telemetry sample pushed to the overlay window via the `metrics-sample` event. */
+/** One telemetry sample. The live HUD is now drawn natively in Rust; this type is
+ *  kept for the settings-panel live preview (mock data) and the shared `OverlayPanel`. */
 export interface MetricsSample {
   game?: string | null;
   cpu_usage: number;

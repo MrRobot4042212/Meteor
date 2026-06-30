@@ -1,21 +1,25 @@
 //! In-game metrics overlay sampler.
 //!
-//! A single background thread samples hardware telemetry and pushes it to the
-//! transparent `overlay` window via the `metrics-sample` event. It is fully
-//! idle-cheap: it only samples while the overlay is enabled *and* a game is
-//! running (the playtime watcher publishes the current game + pid here). On
-//! systems without an NVIDIA GPU the GPU fields are simply omitted.
+//! A single background thread samples hardware telemetry and draws it straight into
+//! the native HUD window via the `overlay` facade (DirectComposition when available,
+//! GDI fallback). It is fully idle-cheap: it only samples + draws while the overlay is
+//! enabled, a game is running, AND that game is the foreground window (the playtime
+//! watcher publishes the current game + pid here). On systems without an NVIDIA GPU the
+//! GPU fields are simply omitted; AMD GPUs are read via ADLX.
 //!
-//! FPS / frametime / present-latency are left as `None` here; they come from the
-//! PresentMon (ETW) integration added in a later phase, which needs the bundled
-//! PresentMon binary and elevation — everything else works without admin.
+//! FPS / frametime come from ADLX (AMD, no admin) or the PresentMon ETW controller
+//! (NVIDIA, admin only) — both degrade silently to `None`. Everything else works
+//! without admin.
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use sysinfo::System;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
+
+#[cfg(windows)]
+use crate::overlay;
 
 use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
 use nvml_wrapper::Nvml;
@@ -28,6 +32,10 @@ static FPS_WANTED: AtomicBool = AtomicBool::new(false);
 /// Whether CPU temperature is enabled, so the LHM sidecar (kernel driver) only
 /// runs when its output is actually shown.
 static CPU_TEMP_WANTED: AtomicBool = AtomicBool::new(false);
+/// Whether ADLX is currently supplying FPS (AMD's native, admin-free counter). When
+/// true the PresentMon controller stays idle — running an ETW session per frame for
+/// a number we'd only discard is pure overhead (and needs admin).
+static ADLX_FPS_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Sampling interval in milliseconds.
 static INTERVAL_MS: AtomicU64 = AtomicU64::new(1000);
 /// PID of the running game's main process (for PresentMon). 0 = none.
@@ -36,6 +44,12 @@ static CURRENT_PID: AtomicU32 = AtomicU32::new(0);
 static CURRENT_GAME: Mutex<Option<String>> = Mutex::new(None);
 /// Which GPU to sample: "auto" | "nvml:<i>" | "adlx:<i>". None = "auto".
 static GPU_SELECT: Mutex<Option<String>> = Mutex::new(None);
+/// Whether the in-game overlay *settings* screen (WebView2 window) is open. While
+/// it is, the native HUD hides so the two overlays don't fight for the z-order.
+static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
+/// Full overlay render config (colors, font size, which metrics, position…),
+/// snapshotted so the native HUD renderer can read it each tick.
+static RENDER_CFG: Mutex<Option<crate::models::OverlaySettings>> = Mutex::new(None);
 
 /// One telemetry sample sent to the overlay window.
 #[derive(Clone, Serialize)]
@@ -70,6 +84,20 @@ pub fn set_gpu(sel: String) {
     *GPU_SELECT.lock().unwrap() = Some(sel);
 }
 
+/// Mark the in-game overlay settings screen open/closed (hides/shows the native HUD).
+pub fn set_settings_open(open: bool) {
+    SETTINGS_OPEN.store(open, Ordering::Relaxed);
+}
+
+/// Snapshot the full overlay config for the native HUD renderer.
+pub fn set_render_cfg(cfg: crate::models::OverlaySettings) {
+    *RENDER_CFG.lock().unwrap() = Some(cfg);
+}
+
+fn render_cfg() -> Option<crate::models::OverlaySettings> {
+    RENDER_CFG.lock().unwrap().clone()
+}
+
 fn current_gpu() -> String {
     GPU_SELECT
         .lock()
@@ -93,9 +121,12 @@ pub fn current_pid() -> u32 {
     CURRENT_PID.load(Ordering::Relaxed)
 }
 
-/// Whether PresentMon should be running: overlay on and an FPS metric enabled.
+/// Whether PresentMon should be running: overlay on, an FPS metric enabled, and
+/// ADLX isn't already providing FPS (on AMD it is → no need for the ETW session).
 pub fn want_fps() -> bool {
-    OVERLAY_ENABLED.load(Ordering::Relaxed) && FPS_WANTED.load(Ordering::Relaxed)
+    OVERLAY_ENABLED.load(Ordering::Relaxed)
+        && FPS_WANTED.load(Ordering::Relaxed)
+        && !ADLX_FPS_ACTIVE.load(Ordering::Relaxed)
 }
 
 /// Whether the CPU-temp sidecar should run: overlay on and CPU temp enabled.
@@ -124,23 +155,58 @@ pub fn start(app: AppHandle) {
         // Tracks whether the overlay window is currently shown, to avoid spamming
         // show()/hide() every tick.
         let mut shown = false;
+        // Last foreground window we re-asserted topmost against. We only restack
+        // when the foreground actually changes (see the topmost block below) —
+        // toggling NOTOPMOST→TOPMOST every tick forces DWM to recomposite and
+        // knocks the game out of independent-flip, causing a periodic hitch.
+        #[cfg(windows)]
+        let mut last_fg: isize = 0;
         // Last GPU selection applied to ADLX, so we only re-select when it changes.
         #[cfg(windows)]
         let mut applied_gpu = String::new();
 
-
         loop {
             std::thread::sleep(Duration::from_millis(INTERVAL_MS.load(Ordering::Relaxed)));
 
-            // Idle path: overlay off or no game running → keep the window hidden.
+            // Drain the HUD window's message queue (passive, but stays responsive).
+            #[cfg(windows)]
+            overlay::pump();
+
+            // Idle path: overlay off, no game, or the in-game settings screen open →
+            // keep the native HUD hidden (the WebView2 window shows the settings).
             let active = OVERLAY_ENABLED.load(Ordering::Relaxed);
-            let game = if active { current_game() } else { None };
+            let settings_open = SETTINGS_OPEN.load(Ordering::Relaxed);
+            let raw_game = if active && !settings_open { current_game() } else { None };
+            // Only draw while the game is the *foreground* window. If you alt-tab out,
+            // the game stays "running" (so playtime keeps counting) but drawing a
+            // topmost HUD over the desktop would force composition for nothing — and we
+            // skip sampling entirely too. If the pid is unknown (0) we don't gate, to
+            // avoid hiding the HUD on a process we couldn't resolve.
+            #[cfg(windows)]
+            let pid = CURRENT_PID.load(Ordering::Relaxed);
+            #[cfg(windows)]
+            let fg_pid = if raw_game.is_some() { overlay::foreground_pid() } else { 0 };
+            // Only draw while the game is the foreground window. Alt-tabbed out, drawing
+            // a topmost HUD over the desktop forces composition for nothing — and on an
+            // MPO-denied config that costs the same as in-game. If the pid is unknown (0)
+            // we don't gate, to avoid hiding the HUD on a process we couldn't resolve.
+            #[cfg(windows)]
+            let game = if raw_game.is_some() && pid != 0 && fg_pid != pid {
+                None
+            } else {
+                raw_game.clone()
+            };
+            #[cfg(not(windows))]
+            let game = raw_game;
             if game.is_none() {
                 if shown {
-                    if let Some(w) = app.get_webview_window("overlay") {
-                        let _ = w.hide();
-                    }
+                    #[cfg(windows)]
+                    overlay::hide();
                     shown = false;
+                    #[cfg(windows)]
+                    {
+                        last_fg = 0; // re-assert topmost when we show again
+                    }
                 }
                 continue;
             }
@@ -202,6 +268,9 @@ pub fn start(app: AppHandle) {
 
             // Sample the chosen backend. ADLX wins when explicitly picked or when
             // there's no NVIDIA; otherwise NVML (default index 0, or the picked one).
+            // Re-armed below only if the ADLX path actually supplies FPS this tick;
+            // cleared otherwise so PresentMon takes over (e.g. NVML selected).
+            ADLX_FPS_ACTIVE.store(false, Ordering::Relaxed);
             let mut gpu_filled = false;
             #[cfg(windows)]
             if amd && (want_adlx || nvml.is_none()) {
@@ -213,10 +282,14 @@ pub fn start(app: AppHandle) {
                     sample.gpu_clock_mhz = g.clock_mhz;
                     sample.gpu_power_w = g.power_w;
                     // ADLX reports FPS of the focused app natively (no PID
-                    // targeting / admin); prefer it over PresentMon when present.
+                    // targeting / admin); prefer it over PresentMon when present and
+                    // flag it so the PresentMon controller stays idle (no ETW session).
                     if let Some(f) = g.fps {
                         sample.fps = Some(f);
                         sample.frametime_ms = Some(1000.0 / f);
+                        ADLX_FPS_ACTIVE.store(true, Ordering::Relaxed);
+                    } else {
+                        ADLX_FPS_ACTIVE.store(false, Ordering::Relaxed);
                     }
                     gpu_filled = true;
                 }
@@ -244,69 +317,34 @@ pub fn start(app: AppHandle) {
                 }
             }
 
-            // Show the overlay and push the sample to it. We re-assert topmost only
-            // when the foreground window changes — a game taking the foreground
-            // (especially borderless) lands above us, but re-stacking every tick
-            // makes the HUD flicker (the NOTOPMOST→TOPMOST toggle repaints). The
-            // foreground rarely changes once you're in-game, so this is flicker-free.
-            if let Some(w) = app.get_webview_window("overlay") {
-                if !shown {
-                    let _ = w.show();
-                    let _ = w.set_always_on_top(true);
+            // Draw the native HUD via the overlay facade: a content-sized window backed
+            // by a DirectComposition flip swapchain (MPO-friendly → the game keeps its
+            // independent-flip, low-latency path), or the GDI layered window as fallback.
+            // No Chromium compositor either way. The window is owned + pumped by this
+            // thread, and only drawn when its content changed (present-on-change).
+            // NOTE: true exclusive-fullscreen (D3D independent flip) bypasses the DWM
+            // compositor entirely — no HWND overlay can appear on top without DLL
+            // injection into the game process.
+            #[cfg(windows)]
+            {
+                if let Some(cfg) = render_cfg() {
+                    let (mon_w, mon_h, scale) = app
+                        .get_webview_window("overlay")
+                        .and_then(|w| w.primary_monitor().ok().flatten())
+                        .map(|m| (m.size().width as i32, m.size().height as i32, m.scale_factor()))
+                        .unwrap_or((1920, 1080, 1.0));
+                    overlay::render(&cfg, &sample, mon_w, mon_h, scale);
                     shown = true;
-                    #[cfg(windows)]
-                    {
-                        force_topmost(&w);
-                        // Exclude the overlay from game screenshots and screen-capture
-                        // tools (OBS, Xbox Game Bar, etc.). Available on Windows 10
-                        // 2004+; silently ignored on older versions.
-                        if let Ok(hwnd) = w.hwnd() {
-                            use windows::Win32::UI::WindowsAndMessaging::{
-                                SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
-                            };
-                            let _ = unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) };
-                        }
+                    // Re-assert topmost only when the foreground window *changes*; the
+                    // NOTOPMOST→TOPMOST toggle forces DWM to recomposite (per-tick
+                    // toggling caused a periodic stutter), so gate it on a real change.
+                    let fg = overlay::foreground();
+                    if fg != 0 && fg != last_fg {
+                        overlay::reassert_topmost();
+                        last_fg = fg;
                     }
                 }
-                // Re-assert TOPMOST every tick while the game is in the foreground.
-                // Using the toggle NOTOPMOST→TOPMOST recovers from cases where a
-                // borderless game re-acquires the top of the z-order after an alt-tab.
-                // Two SetWindowPos calls per tick is negligible overhead, and using
-                // SWP_NOACTIVATE ensures we never steal input focus from the game.
-                // NOTE: true exclusive-fullscreen (D3D independent flip) bypasses the
-                // DWM compositor entirely — no HWND overlay can appear on top without
-                // DLL injection into the game process.
-                #[cfg(windows)]
-                {
-                    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-                    let fg = unsafe { GetForegroundWindow() }.0 as isize;
-                    if fg != 0 {
-                        force_topmost(&w);
-                    }
-                }
-                let _ = app.emit_to("overlay", "metrics-sample", &sample);
             }
         }
     });
-}
-
-/// Force a window to the very top of the topmost z-order band.
-///
-/// `SetWindowPos(HWND_TOPMOST)` on an already-topmost window does *not* restack
-/// it, so a game activated after us stays on top. Toggling NOTOPMOST→TOPMOST
-/// reinserts the overlay at the front of the band. `SWP_NOACTIVATE` keeps input
-/// focus on the game (the overlay is click-through anyway). This fixes windowed
-/// and borderless (DWM-composited) games; true exclusive fullscreen / independent
-/// flip bypasses the compositor and can't be overlaid without injection.
-#[cfg(windows)]
-fn force_topmost(window: &tauri::WebviewWindow) {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    };
-    let Ok(hwnd) = window.hwnd() else { return };
-    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
-    unsafe {
-        let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
-    }
 }

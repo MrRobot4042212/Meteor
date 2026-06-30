@@ -60,7 +60,21 @@ windows = { version = "0.61", features = [
     # Resolve the user's display/full name for the Home greeting (GetUserNameExW).
     "Win32_Security_Authentication_Identity",
     "Win32_System_Threading",
+    # Native layered HUD window (lightweight overlay): module handle for the window class.
+    "Win32_System_LibraryLoader",
     "Win32_UI_Shell",
+    # MPO-friendly HUD: DirectComposition + DXGI flip swapchain + Direct2D/DirectWrite,
+    # so DWM can promote the overlay to a hardware plane and the game keeps independent
+    # flip (no composition / input lag). Falls back to the GDI layered window.
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Graphics_DirectWrite",
+    "Foundation_Numerics",
 ] }
 
 [profile.release]
@@ -69,3 +83,13 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# sysinfo 0.30 has an unguarded subtraction in its Windows process-time code
+# (`compute_start`: process_times/10_000_000 - epoch). When GetProcessTimes fails for a
+# protected/system process it leaves the time at 0, so the subtraction underflows. In
+# release this just wraps (overflow-checks already off) and yields a bogus start_time we
+# never read; but a debug build panics and kills the playtime watcher thread. Disable
+# overflow checks for *just* this crate in dev so it matches release behaviour, without
+# weakening overflow checks on our own code.
+[profile.dev.package.sysinfo]
+overflow-checks = false

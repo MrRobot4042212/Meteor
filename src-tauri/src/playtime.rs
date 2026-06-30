@@ -259,6 +259,8 @@ pub fn start(app: AppHandle) {
         let mut since_index = 0u64;
         // Game id currently shown in Discord Rich Presence (None = nothing).
         let mut presence: Option<String> = None;
+        // Debug: last game name published to the overlay, to log only on change.
+        let mut dbg_overlay_game: Option<String> = None;
 
         loop {
             std::thread::sleep(Duration::from_secs(POLL_SECS));
@@ -340,6 +342,17 @@ pub fn start(app: AppHandle) {
             let game_name = entry.map(|e| e.name.clone());
             let game_pid = entry
                 .and_then(|e| find_pid(&sys, e.install_dir.as_deref(), e.executable.as_deref()));
+            // Debug: surface why the overlay is/ isn't fed a game (transition-only).
+            if game_name != dbg_overlay_game {
+                eprintln!(
+                    "[overlay] watcher: running_primary={:?} launched_from_meteor={} -> publish={:?} pid={:?}",
+                    primary,
+                    show_metrics_for.is_some(),
+                    game_name,
+                    game_pid
+                );
+                dbg_overlay_game = game_name.clone();
+            }
             crate::metrics::set_current_game(game_name, game_pid);
 
             if primary != presence {
