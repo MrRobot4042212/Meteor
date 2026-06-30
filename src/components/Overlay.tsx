@@ -1,7 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { useEffect } from 'react';
 import { setOverlayInteractive } from '@/lib/tauri';
 import type { MetricsSample, OverlaySettings } from '@/lib/types';
 import { OverlaySettingsScreen } from './OverlaySettingsScreen';
@@ -137,39 +136,24 @@ export function OverlayPanel({
 }
 
 /**
- * Host for the in-game overlay *settings* screen. The HUD itself is now drawn by a
- * native layered window from Rust (`overlay_native.rs`) for minimal latency, so this
- * WebView2 window only mounts the settings screen — shown on the settings hotkey
- * (`toggle-overlay-settings`), which also makes the window visible + interactive via
- * `setOverlayInteractive`.
+ * Host for the in-game overlay *settings* screen. The HUD itself is drawn by a native
+ * layered window from Rust (`overlay_dcomp`/`overlay_native`) for minimal latency, so
+ * this WebView2 window's *only* job is the settings screen. It is now created on demand
+ * by Rust (`ensure_overlay_window`) when the settings hotkey opens it and destroyed on
+ * close, so no WebView2/Chromium process sits resident during gameplay. Because the
+ * window exists only while settings are open, we render the screen immediately on mount;
+ * closing it tells Rust to destroy the window.
  */
 export function Overlay() {
-  const [showSettings, setShowSettings] = useState(false);
-
   useEffect(() => {
     // The overlay window must be see-through (globals.css paints an opaque bg).
     document.documentElement.style.background = 'transparent';
     document.body.style.background = 'transparent';
-
-    const unSettings = listen('toggle-overlay-settings', () => {
-      setShowSettings((prev) => {
-        const next = !prev;
-        setOverlayInteractive(next).catch(() => {});
-        return next;
-      });
-    });
-
-    return () => {
-      unSettings.then((f) => f());
-    };
   }, []);
-
-  if (!showSettings) return null;
 
   return (
     <OverlaySettingsScreen
       onClose={() => {
-        setShowSettings(false);
         setOverlayInteractive(false).catch(() => {});
       }}
     />

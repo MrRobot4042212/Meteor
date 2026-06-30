@@ -34,6 +34,26 @@ pub struct DisplayInfo {
     pub primary: bool,
 }
 
+/// Why the in-game overlay may be costing performance: the live composition health
+/// plus the system-config levers that decide whether Windows grants the HUD a hardware
+/// overlay plane (MPO). Surfaced in the overlay settings so the user can fix their config.
+#[derive(Serialize)]
+pub struct MpoDiagnostics {
+    /// Live overlay health: 0 unknown, 1 free (HUD on a hardware plane), 2 costing
+    /// (DWM compositing the HUD → the game loses independent-flip).
+    pub health: u8,
+    /// Number of active monitors. Multi-monitor is the most common MPO blocker.
+    pub monitors: u32,
+    /// Refresh rate (Hz) of each active monitor.
+    pub refresh_rates: Vec<u32>,
+    /// True if the active monitors run at different refresh rates — a frequent MPO
+    /// blocker (DWM can't independent-flip cleanly across mixed refresh).
+    pub mixed_refresh: bool,
+    /// Hardware-accelerated GPU scheduling (HAGS) enabled — often required for MPO.
+    /// `None` if it couldn't be determined.
+    pub hags: Option<bool>,
+}
+
 #[derive(Serialize)]
 pub struct SystemInfo {
     pub cpu: String,
@@ -161,6 +181,41 @@ fn motherboard() -> Option<String> {
 
 #[cfg(not(windows))]
 fn motherboard() -> Option<String> {
+    None
+}
+
+/// Gather the overlay MPO diagnostics: live health + the config levers (monitor count,
+/// mixed refresh, HAGS) that decide whether Windows can put the HUD on a hardware plane.
+pub fn mpo_diagnostics() -> MpoDiagnostics {
+    let disp = displays();
+    let refresh_rates: Vec<u32> = disp.iter().map(|d| d.refresh_hz).collect();
+    let mut uniq = refresh_rates.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    MpoDiagnostics {
+        health: crate::metrics::overlay_health(),
+        monitors: disp.len() as u32,
+        mixed_refresh: uniq.len() > 1,
+        refresh_rates,
+        hags: hags_enabled(),
+    }
+}
+
+/// Whether Hardware-accelerated GPU scheduling is enabled (`HwSchMode == 2`). `None`
+/// if the value is absent / unreadable (driver default — state unknown).
+#[cfg(windows)]
+fn hags_enabled() -> Option<bool> {
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    use winreg::RegKey;
+    let key = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers")
+        .ok()?;
+    let mode: u32 = key.get_value("HwSchMode").ok()?;
+    Some(mode == 2)
+}
+
+#[cfg(not(windows))]
+fn hags_enabled() -> Option<bool> {
     None
 }
 

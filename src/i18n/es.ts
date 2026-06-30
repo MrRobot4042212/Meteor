@@ -205,6 +205,22 @@ export const es = {
     sizeNormal: 'Normal',
     sizeLarge: 'Grande',
   },
+  overlayMpo: {
+    title: 'Rendimiento (MPO)',
+    healthFree: 'Sin coste',
+    healthCosting: 'Costando FPS',
+    healthUnknown: 'Sin medir',
+    modeAlways: 'Mostrar siempre',
+    modePerformance: 'Priorizar FPS',
+    modeAlwaysHint:
+      'El HUD se muestra siempre. Si Windows no le da un plano hardware, costará FPS en este juego.',
+    modePerformanceHint:
+      'Si el HUD detecta que está costando rendimiento, se oculta solo para no bajar los FPS del juego.',
+    fixTitle: 'Para que sea gratis, Windows debe darle un plano hardware. Revisa:',
+    tipMultimonitor: '{{n}} monitores activos — el multimonitor suele impedir el plano hardware (MPO).',
+    tipMixedRefresh: 'Refrescos distintos ({{rates}}) — iguala todos los monitores al mismo Hz.',
+    tipHags: 'Programación de GPU por hardware (HAGS) desactivada — actívala en Configuración → Pantalla → Gráficos.',
+  },
   onboarding: {
     welcomeTitle: 'Bienvenido a Meteor',
     welcomeBody: 'Tu nueva central unificada de juegos. Hemos analizado tu PC y organizado tus títulos de Steam, Epic, GOG, y aplicaciones de Windows en un solo lugar.',

@@ -15,6 +15,9 @@ const ACTIVE_FILE: &str = "active_sessions.json";
 const LIBRARY_CACHE: &str = "library_cache.json";
 /// Poll interval for the global process watcher.
 const POLL_SECS: u64 = 5;
+/// While a game is confirmed running, do the expensive full process enumeration only
+/// this often; cheap per-PID liveness checks (`proc_alive`) cover the polls in between.
+const FULL_SCAN_SECS: u64 = 20;
 /// How often the watcher reloads the library index from disk.
 const INDEX_REFRESH_SECS: u64 = 60;
 /// Sessions shorter than this are ignored (a crash, a wrong-process match…).
@@ -198,25 +201,23 @@ fn library_index(app: &AppHandle) -> Vec<IndexEntry> {
         .collect()
 }
 
-/// PID of a running process belonging to this entry (for the metrics overlay /
-/// PresentMon). Same matching rules as `entry_running`.
-fn find_pid(sys: &System, install_dir: Option<&str>, exe: Option<&str>) -> Option<u32> {
+/// PID of a running process belonging to this entry (for matching + the metrics
+/// overlay / PresentMon). `procs` is the `(pid, lowercased exe path)` list captured
+/// once per full scan; a `Some` result doubles as "this entry is running".
+fn find_pid(procs: &[(u32, String)], install_dir: Option<&str>, exe: Option<&str>) -> Option<u32> {
     let dir = install_dir.map(|s| s.to_lowercase());
     let exe = exe.map(|s| s.to_lowercase());
-    for (pid, p) in sys.processes() {
-        let Some(path) = p.exe().map(|e| e.to_string_lossy().to_lowercase()) else {
-            continue;
-        };
+    for (pid, path) in procs {
         if let Some(e) = &exe {
-            if &path == e {
-                return Some(pid.as_u32());
+            if path == e {
+                return Some(*pid);
             }
         }
         if let Some(d) = &dir {
             if !d.is_empty() && path.starts_with(d.as_str()) {
-                let name = path.rsplit(['\\', '/']).next().unwrap_or(&path);
+                let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
                 if !EXCLUDE.iter().any(|x| name.contains(x)) {
-                    return Some(pid.as_u32());
+                    return Some(*pid);
                 }
             }
         }
@@ -224,26 +225,36 @@ fn find_pid(sys: &System, install_dir: Option<&str>, exe: Option<&str>) -> Optio
     None
 }
 
-/// True if one of the running exe paths belongs to this entry.
-fn entry_running(paths: &[String], install_dir: Option<&str>, exe: Option<&str>) -> bool {
-    let dir = install_dir.map(|s| s.to_lowercase());
-    let exe = exe.map(|s| s.to_lowercase());
-    paths.iter().any(|path| {
-        if let Some(e) = &exe {
-            if path == e {
-                return true;
-            }
+/// Whether a process with this PID is still alive, via a single cheap Win32 query, so
+/// a confirmed-running game can be re-checked between full scans without walking every
+/// process on the system.
+#[cfg(windows)]
+fn proc_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // GetExitCodeProcess reports 259 (STILL_ACTIVE) while the process runs. A process
+    // that genuinely exits with 259 is a rare collision the periodic full scan corrects.
+    const STILL_ACTIVE: u32 = 259;
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            // Can't open → treat as gone; if it was actually a live, protected process
+            // the next full scan re-adds it by path.
+            return false;
+        };
+        if handle.is_invalid() {
+            return false;
         }
-        if let Some(d) = &dir {
-            if !d.is_empty() && path.starts_with(d.as_str()) {
-                let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
-                if !EXCLUDE.iter().any(|x| name.contains(x)) {
-                    return true;
-                }
-            }
-        }
-        false
-    })
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code).is_ok();
+        let _ = CloseHandle(handle);
+        // On a query failure, err towards "alive" so we never drop a running session.
+        !ok || code == STILL_ACTIVE
+    }
 }
 
 /// Start the global playtime watcher: a background thread that polls every
@@ -253,10 +264,14 @@ fn entry_running(paths: &[String], install_dir: Option<&str>, exe: Option<&str>)
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         let mut sys = System::new();
-        // id -> (start, last_seen) for sessions currently in progress.
-        let mut active: HashMap<String, (u64, u64)> = HashMap::new();
+        // id -> (start, last_seen, pid) for sessions currently in progress.
+        let mut active: HashMap<String, (u64, u64, u32)> = HashMap::new();
         let mut index = library_index(&app);
         let mut since_index = 0u64;
+        // Seconds since the last full process enumeration. While a game is confirmed
+        // running we only do cheap per-PID liveness checks between full scans, so the
+        // watcher costs O(active games) instead of O(all processes) during play.
+        let mut since_full = 0u64;
         // Game id currently shown in Discord Rich Presence (None = nothing).
         let mut presence: Option<String> = None;
         // Debug: last game name published to the overlay, to log only on change.
@@ -271,13 +286,6 @@ pub fn start(app: AppHandle) {
                 since_index = 0;
             }
 
-            sys.refresh_processes_specifics(sysinfo::ProcessRefreshKind::new().with_exe(sysinfo::UpdateKind::Always));
-            let paths: Vec<String> = sys
-                .processes()
-                .values()
-                .filter_map(|p| p.exe().map(|e| e.to_string_lossy().to_lowercase()))
-                .collect();
-
             let ts = now();
 
             // Mantenemos en la lista de "lanzados" a los juegos que sigan en progreso
@@ -286,23 +294,67 @@ pub fn start(app: AppHandle) {
             launched_list.retain(|(id, launch_ts)| {
                 active.contains_key(id) || ts.saturating_sub(*launch_ts) < 120
             });
+            // A Meteor-launched game we haven't matched to a process yet → keep scanning
+            // promptly until it shows up (don't wait for the slow full-scan cadence).
+            let pending_launch = launched_list
+                .iter()
+                .any(|(id, _)| !active.contains_key(id));
+
+            // Full enumeration vs. cheap liveness. Full scan when nothing is tracked
+            // (idle: cheap, and the only way to catch a game launched outside Meteor), a
+            // launch is still pending, or the periodic refresh is due. Off-Windows there
+            // is no cheap liveness primitive, so always scan.
+            #[cfg(windows)]
+            let do_full = active.is_empty() || pending_launch || since_full >= FULL_SCAN_SECS;
+            #[cfg(not(windows))]
+            let do_full = true;
 
             let mut running: HashSet<String> = HashSet::new();
-            for e in &index {
-                // OPT-IN: Only check processes for games that are active or were launched via Meteor.
-                let is_active = active.contains_key(&e.id);
-                let was_launched = launched_list.iter().any(|(l_id, _)| l_id == &e.id);
-                
-                if !is_active && !was_launched {
-                    continue;
-                }
+            if do_full {
+                since_full = 0;
+                sys.refresh_processes_specifics(
+                    sysinfo::ProcessRefreshKind::new().with_exe(sysinfo::UpdateKind::Always),
+                );
+                // (pid, lowercased exe path) captured once, reused for matching + pid.
+                let procs: Vec<(u32, String)> = sys
+                    .processes()
+                    .iter()
+                    .filter_map(|(pid, p)| {
+                        p.exe()
+                            .map(|e| (pid.as_u32(), e.to_string_lossy().to_lowercase()))
+                    })
+                    .collect();
 
-                if entry_running(&paths, e.install_dir.as_deref(), e.executable.as_deref()) {
-                    running.insert(e.id.clone());
-                    active
-                        .entry(e.id.clone())
-                        .and_modify(|v| v.1 = ts)
-                        .or_insert((ts, ts));
+                for e in &index {
+                    // OPT-IN: only games that are active or were launched via Meteor.
+                    let is_active = active.contains_key(&e.id);
+                    let was_launched = launched_list.iter().any(|(l_id, _)| l_id == &e.id);
+                    if !is_active && !was_launched {
+                        continue;
+                    }
+                    if let Some(pid) =
+                        find_pid(&procs, e.install_dir.as_deref(), e.executable.as_deref())
+                    {
+                        running.insert(e.id.clone());
+                        active
+                            .entry(e.id.clone())
+                            .and_modify(|v| {
+                                v.1 = ts;
+                                v.2 = pid;
+                            })
+                            .or_insert((ts, ts, pid));
+                    }
+                }
+            } else {
+                since_full += POLL_SECS;
+                // Cheap path: confirm each tracked game's PID is still alive (1 syscall
+                // each) instead of enumerating every process on the system.
+                #[cfg(windows)]
+                for (id, v) in active.iter_mut() {
+                    if proc_alive(v.2) {
+                        v.1 = ts;
+                        running.insert(id.clone());
+                    }
                 }
             }
 
@@ -313,7 +365,7 @@ pub fn start(app: AppHandle) {
                 .cloned()
                 .collect();
             for id in ended {
-                if let Some((start, last)) = active.remove(&id) {
+                if let Some((start, last, _pid)) = active.remove(&id) {
                     if last.saturating_sub(start) >= MIN_SESSION_SECS {
                         let _ = record_session(&app, &id, start, last);
                         let _ = app.emit("playtime-updated", &id);
@@ -324,7 +376,7 @@ pub fn start(app: AppHandle) {
             // Discord Rich Presence: show the most recently started running game.
             let primary = running
                 .iter()
-                .filter_map(|id| active.get(id).map(|(s, _)| (id.clone(), *s)))
+                .filter_map(|id| active.get(id).map(|(s, _, _)| (id.clone(), *s)))
                 .filter(|(id, _)| {
                     index
                         .iter()
@@ -337,11 +389,14 @@ pub fn start(app: AppHandle) {
 
             // Publish the foreground game (name + pid) to the metrics overlay
             // ONLY if it was launched from Meteor.
-            let show_metrics_for = primary.as_ref().filter(|id| launched_list.iter().any(|(l_id, _)| l_id == *id));
-            let entry = show_metrics_for.and_then(|id| index.iter().find(|e| e.id == **id));
-            let game_name = entry.map(|e| e.name.clone());
-            let game_pid = entry
-                .and_then(|e| find_pid(&sys, e.install_dir.as_deref(), e.executable.as_deref()));
+            let show_metrics_for = primary
+                .as_ref()
+                .filter(|id| launched_list.iter().any(|(l_id, _)| l_id == *id));
+            let game_name = show_metrics_for
+                .and_then(|id| index.iter().find(|e| e.id == **id))
+                .map(|e| e.name.clone());
+            // PID comes from the active map (resolved at scan time) — no extra walk.
+            let game_pid = show_metrics_for.and_then(|id| active.get(id).map(|(_, _, pid)| *pid));
             // Debug: surface why the overlay is/ isn't fed a game (transition-only).
             if game_name != dbg_overlay_game {
                 eprintln!(
@@ -363,7 +418,7 @@ pub fn start(app: AppHandle) {
                             .find(|e| &e.id == id)
                             .map(|e| e.name.clone())
                             .unwrap_or_default();
-                        let start = active.get(id).map(|(s, _)| *s).unwrap_or(ts);
+                        let start = active.get(id).map(|(s, _, _)| *s).unwrap_or(ts);
                         // Only commit `presence` once Discord actually accepted it,
                         // so we keep retrying if Discord isn't up yet.
                         if crate::discord::set_playing(&name, start) {
@@ -380,7 +435,7 @@ pub fn start(app: AppHandle) {
             // Flush in-progress sessions for crash recovery.
             let snapshot: Vec<ActiveSession> = active
                 .iter()
-                .map(|(id, (start, last))| ActiveSession {
+                .map(|(id, (start, last, _pid))| ActiveSession {
                     id: id.clone(),
                     start: *start,
                     last_seen: *last,

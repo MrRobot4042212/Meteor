@@ -11,6 +11,32 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
 ## [No publicado] — Trabajo en curso
 
 ### Añadido
+- **Overlay adaptativo: detecta si cuesta FPS y reacciona (MPO)** (`metrics.rs`,
+  `overlay_dcomp.rs`, `system.rs`, `OverlayMpoPanel.tsx`): un overlay sin inyección solo
+  es **gratis** si Windows le concede un **plano hardware (MPO)**; en multimonitor o con
+  refrescos mezclados, DWM lo **compone** y el juego pierde *independent-flip* → bajón de
+  FPS/latencia. Ahora el overlay **se entera en vivo**: el sampler lee el modo de
+  composición real del swapchain (`overlay::composition_mode`) tras una breve ventana de
+  medición por sesión y clasifica el HUD como **libre** (plano hardware) o **costando**
+  (DWM componiendo), con histéresis. Estado expuesto a la UI (`overlay_health` + evento
+  `overlay-health`). Nuevo ajuste **`mpo_mode`**: `"always"` (mostrar siempre, como hasta
+  ahora) o `"performance"` (si detecta que está costando, **se auto-oculta** para no bajar
+  los FPS). Comando **`overlay_mpo_diagnostics`**: monitores activos, refresco por monitor
+  + si están **mezclados**, y **HAGS** (programación de GPU por hardware) — los
+  bloqueadores de MPO. La UI (pantalla in-game + Ajustes → Métricas) muestra un **badge de
+  salud** (Sin coste / Costando FPS) y, cuando cuesta, los **pasos concretos** para que
+  Windows conceda el plano hardware (igualar refrescos, activar HAGS, evitar multimonitor).
+- **Diagnóstico profundo del overlay (opt-in)** (`overlay_diag.rs`): activable con la
+  variable de entorno `METEOR_OVERLAY_DEBUG=1` (cero coste si no se pone — no hay spam
+  por tick). Vuelca a **stderr y a `<app log dir>\overlay-debug.log`**: el backend
+  elegido, la **decisión de gating** cada vez que cambia (overlay on, juego, pid, fg_pid,
+  si dibuja) con la **ventana en primer plano clasificada** (borderless/exclusiva vs
+  ventana, rect vs monitor — la condición que decide el MPO), un **heartbeat cada 3 s**
+  con la muestra en vivo (fps/frame/gpu/cpu/temp/ram) y —lo clave— el **modo de
+  composición real del swapchain** vía `IDXGISwapChainMedia::GetFrameStatisticsMedia`:
+  `OVERLAY` (plano hardware/MPO → sin coste) vs `COMPOSED` (DWM compone → input lag) vs
+  `COMPOSITION_FAILURE`. Es el test definitivo en runtime para saber si el overlay
+  realmente está en un plano hardware o forzando composición.
 - **Saludo personalizado en Inicio**: el «Bienvenido de vuelta» del Home ahora
   incluye el **nombre del usuario** de Windows. Comando Rust `username()`
   (`GetUserNameExW`/`NameDisplay`, con fallback a `%USERNAME%`); el front toma el
@@ -45,6 +71,43 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
     re-pide al cambiarlo. La caché v1 (español horneado) se descarta. **i18n 100%.**
 
 ### Cambiado
+- **Métricas más ligeras durante el juego (menos CPU en segundo plano)**: tres recortes
+  quirúrgicos al subsistema de telemetría sin cambiar la arquitectura (sigue sin inyección de
+  DLL, HUD nativo MPO-friendly, muestreo *gated*):
+  - **Watcher de playtime `O(juegos activos)` en vez de `O(todos los procesos)`** (`playtime.rs`):
+    enumeraba **todos** los procesos del sistema y resolvía el exe path de cada uno **cada 5 s**
+    (un syscall por proceso, 300+ procesos), incluso con un juego ya identificado. Ahora guarda
+    el **PID** de cada sesión activa y entre escaneos completos solo hace una **comprobación de
+    vida barata por PID** (`proc_alive`, `OpenProcess`+`GetExitCodeProcess`, 1 syscall por juego);
+    el escaneo completo se espacia (`FULL_SCAN_SECS`=20 s) o se fuerza si hay un lanzamiento
+    pendiente. El PID publicado al overlay sale del mapa de sesiones (sin re-escanear). Coste
+    aceptado: un juego lanzado **fuera** de Meteor puede tardar hasta ~20 s en detectarse (los
+    lanzados desde Meteor siguen en ~5 s).
+  - **Sampler sin `sysinfo` en el bucle por segundo** (`metrics.rs` + nuevo `sysstat.rs`): CPU% y
+    RAM ahora vía Win32 directo (`GetSystemTimes` / `GlobalMemoryStatusEx`) en vez del refresco de
+    `sysinfo::System` cada tick. Mismo dato mostrado (CPU% global + RAM usada/total), sin enumerar
+    procesos ni asignar.
+  - **Micro-opts ADLX (AMD)** (`adlx_shim.cpp` + `amd.rs`): se **cachea `TotalVRAM`** (constante por
+    GPU) en vez de pedirlo en cada sample, y la **lectura de FPS** (`GetCurrentFPS`) se **omite**
+    cuando el overlay no muestra ninguna métrica de FPS.
+  - **Parseo de PresentMon sin asignación por frame** (`presentmon.rs`): a 200-800 FPS el parser
+    hacía `split(',').collect::<Vec>()` por cada present; ahora extrae solo la columna de frametime
+    con `split(',').nth(idx)` (sin `Vec`), recortando CPU en NVIDIA a FPS altos.
+  - **Diagnóstico MPO multimonitor** (`overlay_diag.rs`): el reporte de la ventana en primer plano
+    ahora incluye **nº de monitores** y si el juego está en el **monitor primario** (el HUD se pinta
+    en el primario; un juego en monitor secundario explica que el HUD no se vea y que se pierda MPO).
+- **Overlay sin WebView2 residente durante el juego (el cambio de rendimiento real)**: la
+  ventana `overlay` (WebView2) se creaba **oculta al arrancar y vivía toda la sesión**. Una
+  WebView2 oculta **mantiene viva toda su pila Chromium** (proceso browser + renderer +
+  **proceso GPU**), que **compite con el juego en la composición de DWM** — justo lo que el
+  HUD nativo se construyó para evitar, anulado por esta ventana fantasma. Ahora el HUD lo
+  pinta solo la ventana nativa y la WebView del overlay **únicamente sirve la pantalla de
+  ajustes**, así que se crea **bajo demanda** (`ensure_overlay_window`) al abrir los ajustes
+  in-game y se **destruye al cerrarlos** (`set_overlay_interactive(false)` → `close()`).
+  Resultado: **cero procesos Chromium del overlay mientras se juega** (antes ~3 procesos +
+  RAM + proceso GPU residentes). El tamaño del monitor para el HUD se lee ahora de la ventana
+  `main` (siempre presente) y la hotkey de ajustes la gestiona Rust (`toggle_overlay_settings`),
+  ya que la ventana puede no existir para recibir un `emit`.
 - **Overlay solo DirectComposition: eliminado el fallback GDI (decisión de rendimiento)**:
   tras testeo profundo, una ventana GDI `UpdateLayeredWindow` **nunca** es elegible para MPO,
   así que siempre saca al juego de *independent-flip* → input lag. Era el peor caso justo
@@ -93,6 +156,15 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
   tutorial, Ajustes, panel de notificaciones y ajustes del overlay.
 
 ### Corregido
+- **Overlay DirectComposition no iniciaba en GPUs AMD (HUD no aparecía)**: el swapchain
+  de composición (`overlay_dcomp.rs`) se creaba con `Scaling: DXGI_SCALING_NONE`, que
+  `CreateSwapChainForComposition` **rechaza** en muchos drivers (AMD incluido) con
+  `DXGI_ERROR_INVALID_CALL` (`0x887A0001`); como el HUD in-game **no tiene fallback GDI**
+  por diseño, fallaba el init y el overlay quedaba desactivado toda la sesión (las
+  métricas se muestreaban bien, pero nada se dibujaba). Fix: usar `DXGI_SCALING_STRETCH`
+  (el buffer va 1:1 con el contenido del HUD, así que no hay stretch real ni se pierde la
+  elegibilidad MPO). De paso, `init()` ahora envuelve cada llamada DXGI/D3D/DComp en un
+  paso etiquetado que registra **qué llamada concreta** falla en `overlay-debug.log`.
 - **Panic en debug de sysinfo que tumbaba el watcher de playtime (y con él el overlay)**:
   sysinfo 0.30 hace `process_times/10_000_000 - 11_644_473_600` sin proteger la resta; si
   `GetProcessTimes` falla en un proceso protegido (queda 0), hay **underflow**. En release

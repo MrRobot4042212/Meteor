@@ -19,6 +19,8 @@ mod models;
 #[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
+mod overlay_diag;
+#[cfg(windows)]
 mod overlay_dcomp;
 #[cfg(windows)]
 mod overlay_native;
@@ -27,6 +29,8 @@ mod presentmon;
 mod screenshots;
 mod steam;
 mod storage;
+#[cfg(windows)]
+mod sysstat;
 mod system;
 mod translate;
 mod ubisoft;
@@ -463,6 +467,14 @@ fn system_info() -> Result<system::SystemInfo, String> {
     Ok(system::collect())
 }
 
+/// Overlay MPO diagnostics: live composition health + the system-config levers
+/// (monitor count, mixed refresh, HAGS) that decide whether the HUD can run on a
+/// hardware overlay plane (free) or gets composited by DWM (costing the game's FPS).
+#[tauri::command]
+fn overlay_mpo_diagnostics() -> system::MpoDiagnostics {
+    system::mpo_diagnostics()
+}
+
 /// The current OS user's name, for greetings. Prefers the Windows display/full
 /// name (e.g. "Diego Chicoma"); falls back to the login name (USERNAME). Empty
 /// string if nothing is available.
@@ -621,27 +633,63 @@ fn toggle_overlay(app: &AppHandle) {
     }
 }
 
-/// Open or close the in-game overlay *settings* screen (the WebView2 `overlay`
-/// window). While open it covers the monitor and takes input; the native HUD hides
-/// (the sampler gates on `set_settings_open`) so the two overlays don't fight for
-/// the z-order. When closed, the window is hidden again.
+/// Create the in-game overlay *settings* WebView window on demand. It is **not**
+/// created at startup and is destroyed when the settings screen closes, so a full
+/// WebView2/Chromium stack (browser + renderer + GPU process) never sits resident
+/// during gameplay — the HUD itself is drawn by the native window, so this window's
+/// only purpose is the settings screen. Returns the existing window if already open.
+fn ensure_overlay_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window("overlay") {
+        return Some(w);
+    }
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
+        .title("Meteor Overlay")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .focused(false)
+        .visible(false)
+        .build()
+        .ok()
+}
+
+/// Toggle the in-game overlay settings screen (the overlay-settings hotkey). Creates
+/// the WebView window on open and destroys it on close, so nothing Chromium-related
+/// stays resident while playing.
+fn toggle_overlay_settings(app: &AppHandle) {
+    if metrics::settings_open() {
+        let _ = set_overlay_interactive(app.clone(), false);
+    } else {
+        let _ = set_overlay_interactive(app.clone(), true);
+    }
+}
+
+/// Open or close the in-game overlay *settings* screen. On open it **creates** the
+/// overlay WebView (covering the monitor, taking input) and the native HUD hides (the
+/// sampler gates on `set_settings_open`). On close it **destroys** the window, freeing
+/// the WebView2 processes — zero Chromium overhead during gameplay.
 #[tauri::command]
 fn set_overlay_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
     metrics::set_settings_open(interactive);
-    if let Some(w) = app.get_webview_window("overlay") {
-        w.set_ignore_cursor_events(!interactive)
-            .map_err(|e| e.to_string())?;
+    if interactive {
+        let Some(w) = ensure_overlay_window(&app) else {
+            return Err("no se pudo crear la ventana de overlay".into());
+        };
+        w.set_ignore_cursor_events(false).map_err(|e| e.to_string())?;
         let corner = app
             .try_state::<std::sync::Mutex<AppSettings>>()
             .map(|s| s.lock().unwrap().overlay.position.clone())
             .unwrap_or_else(|| "top-left".into());
-        layout_overlay(&w, &corner, interactive);
-        if interactive {
-            let _ = w.show();
-            let _ = w.set_focus();
-        } else {
-            let _ = w.hide();
-        }
+        layout_overlay(&w, &corner, true);
+        let _ = w.show();
+        let _ = w.set_focus();
+    } else if let Some(w) = app.get_webview_window("overlay") {
+        // Destroy (not just hide) so the WebView2 processes are released.
+        let _ = w.close();
     }
     Ok(())
 }
@@ -733,9 +781,9 @@ pub fn run() {
                     if Some(*shortcut) == toggle_s {
                         toggle_overlay(app);
                     } else if Some(*shortcut) == settings_s {
-                        // The overlay webview toggles its settings screen and calls
-                        // set_overlay_interactive, which shows/hides + sizes the window.
-                        let _ = app.emit_to("overlay", "toggle-overlay-settings", ());
+                        // Create the overlay settings window on open / destroy it on
+                        // close (it doesn't exist during gameplay, so we can't emit to it).
+                        toggle_overlay_settings(app);
                     } else if Some(*shortcut) == spot_s {
                         show_main(app);
                         let _ = app.emit("open-spotlight", ());
@@ -760,37 +808,11 @@ pub fn run() {
             metrics::set_render_cfg(settings.overlay.clone());
             app.manage(std::sync::Mutex::new(settings.clone()));
 
-            // Full-screen transparent, click-through, always-on-top overlay window
-            // for in-game metrics. Created hidden; the metrics sampler shows it only
-            // while a game is running and the overlay is enabled. It loads the same
-            // bundle and renders the HUD based on its window label.
-            {
-                use tauri::{WebviewUrl, WebviewWindowBuilder};
-                if let Ok(overlay) = WebviewWindowBuilder::new(
-                    app,
-                    "overlay",
-                    WebviewUrl::App("index.html".into()),
-                )
-                .title("Meteor Overlay")
-                .decorations(false)
-                .transparent(true)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .resizable(false)
-                .shadow(false)
-                .focused(false)
-                .visible(false)
-                .build()
-                {
-                    // Small box hugging the chosen corner (NOT full-screen) and let
-                    // clicks pass through to the game. A full-screen transparent
-                    // top-most window forces DWM to drop the game's independent-flip /
-                    // MPO fast path and composite it, adding ~1-2 frames of input
-                    // latency (feels laggy at high FPS). See layout_overlay.
-                    layout_overlay(&overlay, &settings.overlay.position, false);
-                    let _ = overlay.set_ignore_cursor_events(true);
-                }
-            }
+            // NOTE: the in-game overlay WebView window is intentionally **not** created
+            // here. The HUD is drawn by the native layered window (no Chromium), so the
+            // WebView is only needed for the settings screen — it's created on demand by
+            // `ensure_overlay_window` and destroyed on close, so no WebView2 process sits
+            // resident during gameplay. This is the key "lightweight overlay" change.
 
             // Migración: si Meteor corre elevado (admin permanente) y quedó una
             // clave `Run` de autostart pero no la tarea programada, conviértela. La
@@ -892,6 +914,7 @@ pub fn run() {
             get_app_settings,
             set_app_settings,
             system_info,
+            overlay_mpo_diagnostics,
             username,
             is_elevated,
             restart_as_admin,

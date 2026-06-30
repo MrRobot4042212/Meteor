@@ -6,6 +6,7 @@ import { getAppSettings, setAppSettings } from '@/lib/tauri';
 import type { OverlaySettings, OverlayPosition } from '@/lib/types';
 import { formatShortcut } from '@/lib/shortcuts';
 import { CloseIcon } from './icons';
+import { OverlayMpoPanel } from './OverlayMpoPanel';
 
 const OVERLAY_POSITIONS: { value: OverlayPosition; tKey: string }[] = [
   { value: 'top-left', tKey: 'overlayScreen.posTopLeft' },
@@ -103,6 +104,11 @@ export function OverlaySettingsScreen({ onClose }: { onClose: () => void }) {
               ))}
             </div>
           </div>
+
+          <OverlayMpoPanel
+            mpoMode={overlay.mpo_mode}
+            onModeChange={(m) => updateOverlay({ mpo_mode: m })}
+          />
 
           <div className="rounded border border-line bg-elevated/20 p-4">
             <h3 className="mb-3 text-sm font-medium text-ink">{t('overlayScreen.metricsShow')}</h3>

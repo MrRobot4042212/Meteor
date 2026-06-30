@@ -12,10 +12,13 @@
 //! without admin.
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+#[cfg(not(windows))]
 use sysinfo::System;
+#[cfg(windows)]
+use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
@@ -50,6 +53,35 @@ static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 /// Full overlay render config (colors, font size, which metrics, position…),
 /// snapshotted so the native HUD renderer can read it each tick.
 static RENDER_CFG: Mutex<Option<crate::models::OverlaySettings>> = Mutex::new(None);
+/// Live overlay health, derived from the swapchain's real composition mode:
+/// 0 = unknown (no game / not yet measured), 1 = free (HUD on a hardware MPO plane →
+/// the game keeps independent-flip), 2 = costing (DWM is compositing the HUD → the game
+/// loses independent-flip → FPS/latency hit). Read by the UI to show overlay health.
+static OVERLAY_HEALTH: AtomicU8 = AtomicU8::new(0);
+
+/// Live overlay health (see `OVERLAY_HEALTH`): 0 unknown, 1 free, 2 costing.
+pub fn overlay_health() -> u8 {
+    OVERLAY_HEALTH.load(Ordering::Relaxed)
+}
+
+/// Seconds to let the HUD present before trusting its composition mode (the swapchain
+/// needs a few presents before `GetFrameStatisticsMedia` returns a stable result).
+#[cfg(windows)]
+const MEASURE_SECS: u64 = 4;
+/// Consecutive COMPOSED readings before classifying the overlay as costing — hysteresis
+/// so a transient composed frame doesn't flap the state (or hide the HUD).
+#[cfg(windows)]
+const COMPOSED_CONFIRM: u8 = 2;
+
+/// Publish a new overlay health value (0/1/2) to the UI, only on change.
+#[cfg(windows)]
+fn set_health(app: &AppHandle, published: &mut u8, health: u8) {
+    if *published != health {
+        *published = health;
+        OVERLAY_HEALTH.store(health, Ordering::Relaxed);
+        let _ = app.emit("overlay-health", health);
+    }
+}
 
 /// One telemetry sample sent to the overlay window.
 #[derive(Clone, Serialize)]
@@ -87,6 +119,11 @@ pub fn set_gpu(sel: String) {
 /// Mark the in-game overlay settings screen open/closed (hides/shows the native HUD).
 pub fn set_settings_open(open: bool) {
     SETTINGS_OPEN.store(open, Ordering::Relaxed);
+}
+
+/// Whether the in-game overlay settings screen is currently open.
+pub fn settings_open() -> bool {
+    SETTINGS_OPEN.load(Ordering::Relaxed)
 }
 
 /// Snapshot the full overlay config for the native HUD renderer.
@@ -151,6 +188,11 @@ pub fn start(app: AppHandle) {
         // Init from this thread; all ADLX calls stay on it.
         #[cfg(windows)]
         let amd = crate::amd::init();
+        // Global CPU%/RAM: direct Win32 (GetSystemTimes / GlobalMemoryStatusEx) on
+        // Windows — no per-tick sysinfo process refresh; sysinfo elsewhere.
+        #[cfg(windows)]
+        let mut cpu_meter = crate::sysstat::CpuMeter::new();
+        #[cfg(not(windows))]
         let mut sys = System::new();
         // Tracks whether the overlay window is currently shown, to avoid spamming
         // show()/hide() every tick.
@@ -161,9 +203,33 @@ pub fn start(app: AppHandle) {
         // knocks the game out of independent-flip, causing a periodic hitch.
         #[cfg(windows)]
         let mut last_fg: isize = 0;
+        // Adaptive MPO state (per draw "session" = while one foreground window stays up).
+        // We let the HUD present for a short window, read the swapchain's real
+        // composition mode, and classify the overlay as free (on a hardware MPO plane)
+        // or costing (DWM compositing → the game loses independent-flip). In
+        // "performance" mode a stable *costing* result hides the HUD so it never
+        // silently drops the game's FPS.
+        #[cfg(windows)]
+        let mut measure_deadline: Option<std::time::Instant> = None;
+        #[cfg(windows)]
+        let mut composed_streak: u8 = 0;
+        #[cfg(windows)]
+        let mut measured = false;
+        #[cfg(windows)]
+        let mut perf_hidden = false;
+        #[cfg(windows)]
+        let mut published_health: u8 = 0;
         // Last GPU selection applied to ADLX, so we only re-select when it changes.
         #[cfg(windows)]
         let mut applied_gpu = String::new();
+        // Deep diagnostics (opt-in via METEOR_OVERLAY_DEBUG). Tracks the last gating
+        // decision so we only log on change, plus a heartbeat timer.
+        #[cfg(windows)]
+        crate::overlay_diag::init(&app);
+        #[cfg(windows)]
+        let mut diag_state: (bool, bool, bool) = (false, false, false);
+        #[cfg(windows)]
+        let mut diag_heartbeat = std::time::Instant::now();
 
         loop {
             std::thread::sleep(Duration::from_millis(INTERVAL_MS.load(Ordering::Relaxed)));
@@ -198,6 +264,21 @@ pub fn start(app: AppHandle) {
             };
             #[cfg(not(windows))]
             let game = raw_game;
+            // Diagnostics: log the gating decision whenever it changes, with the
+            // foreground window classified (the condition that decides MPO).
+            #[cfg(windows)]
+            if crate::overlay_diag::enabled() {
+                let state = (active, raw_game.is_some(), game.is_some());
+                if state != diag_state {
+                    crate::overlay_diag::log(&format!(
+                        "gate: overlay_on={active} settings_open={settings_open} game={:?} pid={pid} fg_pid={fg_pid} → dibujar={} | {}",
+                        raw_game,
+                        game.is_some(),
+                        crate::overlay_diag::foreground_report()
+                    ));
+                    diag_state = state;
+                }
+            }
             if game.is_none() {
                 if shown {
                     #[cfg(windows)]
@@ -208,16 +289,39 @@ pub fn start(app: AppHandle) {
                         last_fg = 0; // re-assert topmost when we show again
                     }
                 }
+                // No game in the foreground → health is meaningless; clear it and reset
+                // the adaptive measure state so the next session re-measures from scratch.
+                #[cfg(windows)]
+                {
+                    measured = false;
+                    perf_hidden = false;
+                    composed_streak = 0;
+                    if published_health != 0 {
+                        published_health = 0;
+                        OVERLAY_HEALTH.store(0, Ordering::Relaxed);
+                        let _ = app.emit("overlay-health", 0u8);
+                    }
+                }
                 continue;
             }
 
-            // CPU + RAM (sysinfo). The first reading after init may be 0%; it
-            // settles on the next tick.
-            sys.refresh_cpu();
-            sys.refresh_memory();
-            let cpu_usage = sys.global_cpu_info().cpu_usage();
-            let ram_used_mb = sys.used_memory() / MB;
-            let ram_total_mb = sys.total_memory() / MB;
+            // CPU + RAM. The first reading after init may be 0%; it settles on the
+            // next tick (the CPU% meter has no previous delta yet).
+            #[cfg(windows)]
+            let (cpu_usage, ram_used_mb, ram_total_mb) = {
+                let (used, total) = crate::sysstat::mem_mb();
+                (cpu_meter.pct(), used, total)
+            };
+            #[cfg(not(windows))]
+            let (cpu_usage, ram_used_mb, ram_total_mb) = {
+                sys.refresh_cpu();
+                sys.refresh_memory();
+                (
+                    sys.global_cpu_info().cpu_usage(),
+                    sys.used_memory() / MB,
+                    sys.total_memory() / MB,
+                )
+            };
 
             // GPU (NVIDIA via NVML), all best-effort.
             let mut sample = MetricsSample {
@@ -273,8 +377,10 @@ pub fn start(app: AppHandle) {
             ADLX_FPS_ACTIVE.store(false, Ordering::Relaxed);
             let mut gpu_filled = false;
             #[cfg(windows)]
+            let fps_wanted = FPS_WANTED.load(Ordering::Relaxed);
+            #[cfg(windows)]
             if amd && (want_adlx || nvml.is_none()) {
-                if let Some(g) = crate::amd::sample() {
+                if let Some(g) = crate::amd::sample(fps_wanted) {
                     sample.gpu_usage = g.usage;
                     sample.gpu_temp_c = g.temp_c;
                     sample.vram_used_mb = g.vram_used_mb;
@@ -328,20 +434,90 @@ pub fn start(app: AppHandle) {
             #[cfg(windows)]
             {
                 if let Some(cfg) = render_cfg() {
+                    // Read the primary monitor from the always-present `main` window —
+                    // the overlay WebView no longer exists during gameplay (it's created
+                    // on demand only for the settings screen), so we can't query it here.
                     let (mon_w, mon_h, scale) = app
-                        .get_webview_window("overlay")
+                        .get_webview_window("main")
                         .and_then(|w| w.primary_monitor().ok().flatten())
                         .map(|m| (m.size().width as i32, m.size().height as i32, m.scale_factor()))
                         .unwrap_or((1920, 1080, 1.0));
-                    overlay::render(&cfg, &sample, mon_w, mon_h, scale);
-                    shown = true;
-                    // Re-assert topmost only when the foreground window *changes*; the
-                    // NOTOPMOST→TOPMOST toggle forces DWM to recomposite (per-tick
-                    // toggling caused a periodic stutter), so gate it on a real change.
+
+                    // A foreground change starts a fresh measure "session": let the HUD
+                    // present for a moment, then read the real composition mode. Also the
+                    // moment to re-assert topmost (the NOTOPMOST→TOPMOST toggle forces a
+                    // DWM recomposite, so gate it on a real change to avoid a periodic hitch).
                     let fg = overlay::foreground();
                     if fg != 0 && fg != last_fg {
-                        overlay::reassert_topmost();
                         last_fg = fg;
+                        measure_deadline =
+                            Some(std::time::Instant::now() + Duration::from_secs(MEASURE_SECS));
+                        composed_streak = 0;
+                        measured = false;
+                        perf_hidden = false;
+                        overlay::reassert_topmost();
+                    }
+
+                    let performance = cfg.mpo_mode == "performance";
+                    if perf_hidden {
+                        // Stable *costing* + performance mode → keep the HUD hidden so it
+                        // never silently drops the game's FPS. Re-measured on the next
+                        // foreground change.
+                        if shown {
+                            overlay::hide();
+                            shown = false;
+                        }
+                    } else {
+                        overlay::render(&cfg, &sample, mon_w, mon_h, scale);
+                        shown = true;
+
+                        // Classify free vs costing once the present window has settled
+                        // (the swapchain needs a few presents before its composition mode
+                        // is reliable). Done once per session; re-armed on foreground change.
+                        let settled = measure_deadline
+                            .map(|d| std::time::Instant::now() >= d)
+                            .unwrap_or(true);
+                        if !measured && settled {
+                            match overlay::composition_mode() {
+                                Some(1) => {
+                                    // OVERLAY: HUD on a hardware plane → free.
+                                    composed_streak = 0;
+                                    measured = true;
+                                    set_health(&app, &mut published_health, 1);
+                                }
+                                Some(0) => {
+                                    // COMPOSED: DWM is compositing the HUD → costing the game.
+                                    composed_streak = composed_streak.saturating_add(1);
+                                    if composed_streak >= COMPOSED_CONFIRM {
+                                        measured = true;
+                                        set_health(&app, &mut published_health, 2);
+                                        perf_hidden = performance;
+                                    }
+                                }
+                                _ => {} // NONE / FAILURE / not measurable yet → keep trying
+                            }
+                        }
+                    }
+
+                    // Heartbeat (~every 3 s while drawing): the live sample + the
+                    // swapchain composition mode (the definitive MPO check, queried
+                    // inside the dcomp backend).
+                    if crate::overlay_diag::enabled()
+                        && diag_heartbeat.elapsed() >= Duration::from_secs(3)
+                    {
+                        diag_heartbeat = std::time::Instant::now();
+                        crate::overlay_diag::log(&format!(
+                            "muestra: fps={:?} frame={:?}ms gpu={:?}% gpuTemp={:?}°C cpu={:.0}% cpuTemp={:?}°C ram={}/{}MB",
+                            sample.fps,
+                            sample.frametime_ms,
+                            sample.gpu_usage,
+                            sample.gpu_temp_c,
+                            sample.cpu_usage,
+                            sample.cpu_temp_c,
+                            sample.ram_used_mb,
+                            sample.ram_total_mb
+                        ));
+                        overlay::log_composition_mode();
                     }
                 }
             }

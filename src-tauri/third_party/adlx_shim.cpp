@@ -58,6 +58,16 @@ ADLXHelper g_help;
 IADLXPerformanceMonitoringServicesPtr g_perf;
 IADLXGPUPtr g_gpu;
 bool g_ready = false;
+// Total VRAM is constant per GPU, so cache it at init / GPU-switch instead of querying
+// it on every sample.
+unsigned g_vram_total_mb = 0;
+
+// Refresh the cached total VRAM for the currently selected GPU.
+void cache_vram_total() {
+    adlx_uint total = 0;
+    g_vram_total_mb =
+        (g_gpu != nullptr && ADLX_SUCCEEDED(g_gpu->TotalVRAM(&total))) ? total : 0;
+}
 } // namespace
 
 extern "C" int adlx_init() {
@@ -110,11 +120,12 @@ extern "C" int adlx_init() {
         return 5;
     }
 
+    cache_vram_total();
     g_ready = true;
     return 0;
 }
 
-extern "C" int adlx_sample(AdlxSample* out) {
+extern "C" int adlx_sample(AdlxSample* out, int want_fps) {
     if (!g_ready || out == nullptr) return 1;
 
     *out = AdlxSample{};
@@ -163,20 +174,22 @@ extern "C" int adlx_sample(AdlxSample* out) {
         out->flags |= ADLX_F_VRAM_USED;
     }
 
-    adlx_uint total = 0;
-    if (ADLX_SUCCEEDED(g_gpu->TotalVRAM(&total))) {
-        out->vram_total_mb = total;
+    if (g_vram_total_mb > 0) {
+        out->vram_total_mb = g_vram_total_mb;
         out->flags |= ADLX_F_VRAM_TOTAL;
     }
 
     // System-wide FPS of the focused app (what AMD's own overlay shows). No PID
-    // targeting, no admin — more robust than PresentMon for AMD users.
-    IADLXFPSPtr fps;
-    if (ADLX_SUCCEEDED(g_perf->GetCurrentFPS(&fps)) && fps != nullptr) {
-        adlx_int f = 0;
-        if (ADLX_SUCCEEDED(fps->FPS(&f)) && f > 0) {
-            out->fps = f;
-            out->flags |= ADLX_F_FPS;
+    // targeting, no admin — more robust than PresentMon for AMD users. Skipped when the
+    // overlay shows no FPS metric, so we don't pay for a counter we'd discard.
+    if (want_fps) {
+        IADLXFPSPtr fps;
+        if (ADLX_SUCCEEDED(g_perf->GetCurrentFPS(&fps)) && fps != nullptr) {
+            adlx_int f = 0;
+            if (ADLX_SUCCEEDED(fps->FPS(&f)) && f > 0) {
+                out->fps = f;
+                out->flags |= ADLX_F_FPS;
+            }
         }
     }
 
@@ -234,6 +247,7 @@ extern "C" int adlx_select(int idx) {
     if (!ADLX_SUCCEEDED(gpus->At(static_cast<adlx_uint>(idx), &gpu)) || gpu == nullptr)
         return 4;
     g_gpu = gpu;
+    cache_vram_total();
     return 0;
 }
 

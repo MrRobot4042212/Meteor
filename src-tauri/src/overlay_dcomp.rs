@@ -46,9 +46,9 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1, DXGI_PRESENT, DXGI_SCALING_STRETCH,
-    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-    DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1, IDXGISwapChainMedia,
+    DXGI_FRAME_STATISTICS_MEDIA, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+    DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -116,7 +116,22 @@ pub fn try_init() -> bool {
 }
 
 unsafe fn init() -> Result<Dcomp> {
-    let hinst = GetModuleHandleW(None)?;
+    // Wrap each fallible DXGI/D3D/DComp call so a failure names the exact step in the
+    // overlay-debug log (DXGI_ERROR_INVALID_CALL 0x887A0001 is otherwise opaque about
+    // *which* call the driver rejected).
+    macro_rules! step {
+        ($name:expr, $e:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::overlay_diag::log(&format!("init DComp falló en {}: {e}", $name));
+                    return Err(e);
+                }
+            }
+        };
+    }
+
+    let hinst = step!("GetModuleHandleW", GetModuleHandleW(None));
     let class = w!("MeteorOverlayDComp");
     let wc = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -129,49 +144,55 @@ unsafe fn init() -> Result<Dcomp> {
 
     // Topmost, click-through, no-activate, no taskbar, and crucially NO redirection
     // bitmap — transparency comes from the composed premultiplied swapchain.
-    let hwnd = CreateWindowExW(
-        WS_EX_NOREDIRECTIONBITMAP
-            | WS_EX_TOPMOST
-            | WS_EX_TRANSPARENT
-            | WS_EX_NOACTIVATE
-            | WS_EX_TOOLWINDOW,
-        class,
-        PCWSTR::null(),
-        WS_POPUP,
-        0,
-        0,
-        8,
-        8,
-        None,
-        None,
-        Some(hinst.into()),
-        None,
-    )?;
+    let hwnd = step!(
+        "CreateWindowExW",
+        CreateWindowExW(
+            WS_EX_NOREDIRECTIONBITMAP
+                | WS_EX_TOPMOST
+                | WS_EX_TRANSPARENT
+                | WS_EX_NOACTIVATE
+                | WS_EX_TOOLWINDOW,
+            class,
+            PCWSTR::null(),
+            WS_POPUP,
+            0,
+            0,
+            8,
+            8,
+            None,
+            None,
+            Some(hinst.into()),
+            None,
+        )
+    );
 
     // D3D11 device (BGRA support is required for Direct2D interop).
     let mut d3d: Option<ID3D11Device> = None;
-    D3D11CreateDevice(
-        None,
-        D3D_DRIVER_TYPE_HARDWARE,
-        HMODULE::default(),
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-        None,
-        D3D11_SDK_VERSION,
-        Some(&mut d3d),
-        None,
-        None,
-    )?;
+    step!(
+        "D3D11CreateDevice",
+        D3D11CreateDevice(
+            None,
+            D3D_DRIVER_TYPE_HARDWARE,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut d3d),
+            None,
+            None,
+        )
+    );
     let d3d = d3d.ok_or_else(|| windows::core::Error::from_win32())?;
-    let dxgi_device: IDXGIDevice = d3d.cast()?;
+    let dxgi_device: IDXGIDevice = step!("d3d.cast::<IDXGIDevice>", d3d.cast());
 
     // DirectComposition device + target for our window + a root visual.
-    let dcomp: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
-    let target = dcomp.CreateTargetForHwnd(hwnd, true)?;
-    let visual = dcomp.CreateVisual()?;
+    let dcomp: IDCompositionDevice = step!("DCompositionCreateDevice", DCompositionCreateDevice(&dxgi_device));
+    let target = step!("CreateTargetForHwnd", dcomp.CreateTargetForHwnd(hwnd, true));
+    let visual = step!("CreateVisual", dcomp.CreateVisual());
 
     // Composition flip swapchain (premultiplied alpha → transparent HUD background).
-    let adapter = dxgi_device.GetAdapter()?;
-    let factory2: IDXGIFactory2 = adapter.GetParent()?;
+    let adapter = step!("dxgi_device.GetAdapter", dxgi_device.GetAdapter());
+    let factory2: IDXGIFactory2 = step!("adapter.GetParent::<IDXGIFactory2>", adapter.GetParent());
     let desc = DXGI_SWAP_CHAIN_DESC1 {
         Width: 8,
         Height: 8,
@@ -179,23 +200,40 @@ unsafe fn init() -> Result<Dcomp> {
         SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
         BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
         BufferCount: 2,
-        SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+        // FLIP_DISCARD lets the runtime drop buffer contents after present (no
+        // partial-present constraint that pins composition), keeping the plane
+        // MPO-friendly. NOTE: `Scaling` must be DXGI_SCALING_STRETCH here — composition
+        // swapchains (CreateSwapChainForComposition) reject DXGI_SCALING_NONE on many
+        // drivers (AMD included) with DXGI_ERROR_INVALID_CALL (0x887A0001). With the
+        // buffer sized 1:1 to the HUD content there is no actual stretch, so MPO
+        // eligibility is unaffected.
+        SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
         AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
         Scaling: DXGI_SCALING_STRETCH,
         ..Default::default()
     };
-    let swapchain = factory2.CreateSwapChainForComposition(&d3d, &desc, None)?;
-    visual.SetContent(&swapchain)?;
-    target.SetRoot(&visual)?;
-    dcomp.Commit()?;
+    let swapchain = step!(
+        "CreateSwapChainForComposition",
+        factory2.CreateSwapChainForComposition(&d3d, &desc, None)
+    );
+    step!("visual.SetContent", visual.SetContent(&swapchain));
+    step!("target.SetRoot", target.SetRoot(&visual));
+    step!("dcomp.Commit", dcomp.Commit());
 
     // Direct2D device context targeting the swapchain back buffer, plus DirectWrite.
-    let d2d_factory: ID2D1Factory1 = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-    let d2d_device: ID2D1Device = d2d_factory.CreateDevice(&dxgi_device)?;
-    let d2d_ctx = d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+    let d2d_factory: ID2D1Factory1 =
+        step!("D2D1CreateFactory", D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None));
+    let d2d_device: ID2D1Device = step!("d2d_factory.CreateDevice", d2d_factory.CreateDevice(&dxgi_device));
+    let d2d_ctx = step!(
+        "CreateDeviceContext",
+        d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
+    );
     d2d_ctx.SetDpi(96.0, 96.0); // we size everything in device px ourselves
-    let brush = d2d_ctx.CreateSolidColorBrush(&color((255, 255, 255), 1.0), None)?;
-    let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+    let brush = step!(
+        "CreateSolidColorBrush",
+        d2d_ctx.CreateSolidColorBrush(&color((255, 255, 255), 1.0), None)
+    );
+    let dwrite: IDWriteFactory = step!("DWriteCreateFactory", DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED));
 
     Ok(Dcomp {
         hwnd,
@@ -528,6 +566,67 @@ pub fn reassert_topmost() {
             unsafe {
                 let _ = SetWindowPos(d.hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
                 let _ = SetWindowPos(d.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+            }
+        }
+    });
+}
+
+/// Raw DXGI composition mode of the HUD swapchain (0=COMPOSED, 1=OVERLAY, 2=NONE,
+/// 3=COMPOSITION_FAILURE), or `None` if the backend isn't initialized, the HUD isn't
+/// visible (no presented frames to measure), or the query fails. This is the runtime
+/// MPO signal the sampler uses to know whether the overlay is free or costing the game.
+pub fn composition_mode() -> Option<i32> {
+    STATE.with(|s| {
+        let guard = s.borrow();
+        let d = guard.as_ref()?;
+        if !d.visible {
+            return None;
+        }
+        let media: IDXGISwapChainMedia = d.swapchain.cast().ok()?;
+        let mut stats = DXGI_FRAME_STATISTICS_MEDIA::default();
+        if unsafe { media.GetFrameStatisticsMedia(&mut stats) }.is_ok() {
+            Some(stats.CompositionMode.0)
+        } else {
+            None
+        }
+    })
+}
+
+/// Query and log the swapchain's actual composition mode — the definitive runtime
+/// MPO check. `OVERLAY` = the HUD is on a hardware overlay plane (the game keeps
+/// independent-flip → no added latency); `COMPOSED` = DWM is compositing it (the
+/// input-lag case). Diagnostics-gated, so this only runs with METEOR_OVERLAY_DEBUG.
+pub fn log_composition_mode() {
+    STATE.with(|s| {
+        let guard = s.borrow();
+        let Some(d) = guard.as_ref() else {
+            crate::overlay_diag::log("composición: swapchain DComp no inicializado");
+            return;
+        };
+        if !d.visible {
+            crate::overlay_diag::log("composición: HUD oculto (sin frames que medir)");
+            return;
+        }
+        let media: Result<IDXGISwapChainMedia> = d.swapchain.cast();
+        match media {
+            Ok(m) => {
+                let mut stats = DXGI_FRAME_STATISTICS_MEDIA::default();
+                match unsafe { m.GetFrameStatisticsMedia(&mut stats) } {
+                    Ok(()) => {
+                        let mode = stats.CompositionMode.0;
+                        crate::overlay_diag::log(&format!(
+                            "composición swapchain: {} (CompositionMode={mode}, approvedPresentDuration={})",
+                            crate::overlay_diag::composition_mode_name(mode),
+                            stats.ApprovedPresentDuration
+                        ));
+                    }
+                    Err(e) => crate::overlay_diag::log(&format!(
+                        "GetFrameStatisticsMedia falló: {e} (frecuente justo tras mostrar; reintenta el siguiente heartbeat)"
+                    )),
+                }
+            }
+            Err(e) => {
+                crate::overlay_diag::log(&format!("IDXGISwapChainMedia no disponible: {e}"))
             }
         }
     });

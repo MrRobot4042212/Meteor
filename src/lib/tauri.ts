@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Game, Category, GameDetails, PlayStat, AppSettings, SystemInfo } from './types';
+import type { Game, Category, GameDetails, PlayStat, AppSettings, SystemInfo, MpoDiagnostics } from './types';
 
 /** Unified library across every source (Steam, Epic, GOG, EA, Ubisoft, Xbox, manual). */
 export const getLibrary = () => invoke<Game[]>('get_library');
@@ -131,6 +131,10 @@ export const setAppSettings = (settings: AppSettings) =>
 
 /** Hardware/system info for the "Mi equipo" settings panel. */
 export const systemInfo = () => invoke<SystemInfo>('system_info');
+
+/** Overlay MPO diagnostics: live health + config levers (monitors, refresh, HAGS). */
+export const overlayMpoDiagnostics = () =>
+  invoke<MpoDiagnostics>('overlay_mpo_diagnostics');
 
 /** The OS user's display/full name (or login name) for the Home greeting. */
 export const username = () => invoke<string>('username');

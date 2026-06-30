@@ -126,10 +126,12 @@ pub fn render(cfg: &OverlaySettings, m: &MetricsSample, mon_w: i32, mon_h: i32, 
     let mut b = current();
     if b == 0 {
         b = if crate::overlay_dcomp::try_init() {
-            eprintln!("[overlay] backend: DirectComposition (MPO-friendly)");
+            crate::overlay_diag::log("backend: DirectComposition (MPO-friendly)");
             1
         } else {
-            eprintln!("[overlay] DirectComposition no disponible → HUD desactivado (sin fallback GDI)");
+            crate::overlay_diag::log(
+                "DirectComposition no disponible → HUD desactivado (sin fallback GDI)",
+            );
             3
         };
         BACKEND.with(|c| c.set(b));
@@ -159,6 +161,28 @@ pub fn pump() {
 pub fn reassert_topmost() {
     if current() == 1 {
         crate::overlay_dcomp::reassert_topmost();
+    }
+}
+
+/// Raw composition mode of the HUD swapchain (0=COMPOSED, 1=OVERLAY, 2=NONE,
+/// 3=FAILURE), or `None` if not measurable. The runtime MPO signal: OVERLAY = the HUD
+/// is on a hardware plane (free), COMPOSED = DWM is compositing it (costing the game).
+pub fn composition_mode() -> Option<i32> {
+    if current() == 1 {
+        crate::overlay_dcomp::composition_mode()
+    } else {
+        None
+    }
+}
+
+/// Log the swapchain's actual composition mode (OVERLAY=hardware plane vs
+/// COMPOSED=DWM compositing) — the definitive runtime MPO check. No-op unless the
+/// DComp backend is active and diagnostics are enabled.
+pub fn log_composition_mode() {
+    if current() == 1 {
+        crate::overlay_dcomp::log_composition_mode();
+    } else {
+        crate::overlay_diag::log("composición: HUD no activo en backend DComp");
     }
 }
 

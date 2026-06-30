@@ -56,7 +56,7 @@ struct AdlxGpuInfo {
 
 extern "C" {
     fn adlx_init() -> i32;
-    fn adlx_sample(out: *mut AdlxSample) -> i32;
+    fn adlx_sample(out: *mut AdlxSample, want_fps: i32) -> i32;
     fn adlx_gpu_count() -> i32;
     fn adlx_gpu_info(idx: i32, out: *mut AdlxGpuInfo) -> i32;
     fn adlx_select(idx: i32) -> i32;
@@ -135,11 +135,12 @@ pub fn init() -> bool {
     unsafe { adlx_init() == 0 }
 }
 
-/// Read the current GPU metrics, or `None` if ADLX isn't producing a sample.
-pub fn sample() -> Option<GpuSample> {
+/// Read the current GPU metrics, or `None` if ADLX isn't producing a sample. `want_fps`
+/// gates the FPS counter read so we don't pay for it when the overlay shows no FPS row.
+pub fn sample(want_fps: bool) -> Option<GpuSample> {
     let _guard = ADLX_LOCK.lock().unwrap();
     let mut s = AdlxSample::default();
-    if unsafe { adlx_sample(&mut s) } != 0 {
+    if unsafe { adlx_sample(&mut s, want_fps as i32) } != 0 {
         return None;
     }
     let has = |bit: u32| s.flags & bit != 0;

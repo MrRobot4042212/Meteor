@@ -60,6 +60,9 @@ windows = { version = "0.61", features = [
     # Resolve the user's display/full name for the Home greeting (GetUserNameExW).
     "Win32_Security_Authentication_Identity",
     "Win32_System_Threading",
+    # Cheap global CPU%/RAM for the metrics sampler (GetSystemTimes /
+    # GlobalMemoryStatusEx), replacing the per-tick sysinfo refresh.
+    "Win32_System_SystemInformation",
     # Native layered HUD window (lightweight overlay): module handle for the window class.
     "Win32_System_LibraryLoader",
     "Win32_UI_Shell",

@@ -20,6 +20,7 @@ import type { OverlaySettings, OverlayPosition, SystemInfo, MetricsSample, Short
 import { CloseIcon, InfoIcon, GearIcon, FireIcon } from './icons';
 import { formatShortcut } from '@/lib/shortcuts';
 import { OverlayPanel, OVERLAY_CORNER } from './Overlay';
+import { OverlayMpoPanel } from './OverlayMpoPanel';
 
 /** Sample telemetry data used by the live overlay preview inside the settings panel. */
 const PREVIEW_SAMPLE: MetricsSample = {
@@ -423,6 +424,11 @@ function MetricsTab({
                   ))}
                 </div>
               </Card>
+
+              <OverlayMpoPanel
+                mpoMode={overlay.mpo_mode}
+                onModeChange={(m) => updateOverlay({ mpo_mode: m })}
+              />
 
               {sys && sys.gpus.some((g) => g.key) && (
                 <Card title={t('settings.mGpuCard')}>

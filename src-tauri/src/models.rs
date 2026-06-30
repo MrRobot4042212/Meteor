@@ -183,6 +183,12 @@ pub struct OverlaySettings {
     /// Font-size key: "xs" | "sm" | "base".
     #[serde(default = "default_font_size_key")]
     pub font_size: String,
+    /// What to do when the HUD can't get a hardware overlay plane and DWM has to
+    /// composite it (which drops the game out of independent-flip → FPS/latency cost):
+    /// "always" (draw regardless — current behavior) | "performance" (auto-hide the HUD
+    /// once a stable *composed* state is detected, so it never silently costs FPS).
+    #[serde(default = "default_mpo_mode")]
+    pub mpo_mode: String,
 }
 
 impl Default for OverlaySettings {
@@ -205,12 +211,17 @@ impl Default for OverlaySettings {
             accent_color: default_accent_color(),
             bg_opacity: default_bg_opacity(),
             font_size: default_font_size_key(),
+            mpo_mode: default_mpo_mode(),
         }
     }
 }
 
 fn default_overlay_position() -> String {
     "top-left".to_string()
+}
+
+fn default_mpo_mode() -> String {
+    "always".to_string()
 }
 
 fn default_overlay_gpu() -> String {

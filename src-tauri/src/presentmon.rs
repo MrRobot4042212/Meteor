@@ -109,22 +109,21 @@ fn parse_stdout(out: impl std::io::Read) {
 
     for line in reader.lines() {
         let Ok(line) = line else { break };
-        let cols: Vec<&str> = line.split(',').collect();
 
         // Header: locate the frametime column (name varies across versions:
-        // "msBetweenPresents" / "MsBetweenPresents").
+        // "msBetweenPresents" / "MsBetweenPresents"). Parsed once. `split(',').position`
+        // iterates without collecting into a Vec.
         if ft_col.is_none() {
-            if let Some(i) = cols
-                .iter()
-                .position(|c| c.trim().to_ascii_lowercase().contains("betweenpresents"))
-            {
-                ft_col = Some(i);
-            }
+            ft_col = line
+                .split(',')
+                .position(|c| c.trim().to_ascii_lowercase().contains("betweenpresents"));
             continue;
         }
 
         let idx = ft_col.unwrap();
-        let Some(ft) = cols.get(idx).and_then(|v| v.trim().parse::<f32>().ok()) else {
+        // Data rows (the hot path at 200-800 fps): pull just the Nth field with no
+        // per-line allocation, instead of collecting every column into a Vec.
+        let Some(ft) = line.split(',').nth(idx).and_then(|v| v.trim().parse::<f32>().ok()) else {
             continue;
         };
         if !(ft.is_finite() && ft > 0.0) {

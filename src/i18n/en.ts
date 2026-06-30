@@ -206,6 +206,22 @@ export const en = {
     sizeNormal: 'Normal',
     sizeLarge: 'Large',
   },
+  overlayMpo: {
+    title: 'Performance (MPO)',
+    healthFree: 'No cost',
+    healthCosting: 'Costing FPS',
+    healthUnknown: 'Not measured',
+    modeAlways: 'Always show',
+    modePerformance: 'Prioritize FPS',
+    modeAlwaysHint:
+      'The HUD is always shown. If Windows can\'t give it a hardware plane, it will cost FPS in this game.',
+    modePerformanceHint:
+      'If the HUD detects it is costing performance, it hides itself so the game keeps its FPS.',
+    fixTitle: 'For it to be free, Windows must grant a hardware plane. Check:',
+    tipMultimonitor: '{{n}} active monitors — multi-monitor commonly blocks the hardware plane (MPO).',
+    tipMixedRefresh: 'Mixed refresh rates ({{rates}}) — set all monitors to the same Hz.',
+    tipHags: 'Hardware-accelerated GPU scheduling (HAGS) is off — enable it in Settings → Display → Graphics.',
+  },
   onboarding: {
     welcomeTitle: 'Welcome to Meteor',
     welcomeBody: 'Your new unified game hub. We scanned your PC and organized your Steam, Epic, GOG titles and Windows apps in one place.',

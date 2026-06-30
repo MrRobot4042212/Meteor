@@ -113,6 +113,27 @@ export interface OverlaySettings {
   bg_opacity: number;
   /** Font size key: "xs" | "sm" | "base". */
   font_size: string;
+  /**
+   * What to do when the HUD can't get a hardware overlay plane and DWM composites it
+   * (the game loses independent-flip → FPS/latency cost): "always" (draw regardless) |
+   * "performance" (auto-hide the HUD once a stable composed state is detected).
+   */
+  mpo_mode: "always" | "performance";
+}
+
+/** Live overlay health: 0 unknown, 1 free (hardware plane), 2 costing (DWM composing). */
+export type OverlayHealth = 0 | 1 | 2;
+
+/**
+ * Why the in-game overlay may be costing performance: live composition health plus the
+ * system-config levers that decide whether Windows grants the HUD a hardware plane (MPO).
+ */
+export interface MpoDiagnostics {
+  health: OverlayHealth;
+  monitors: number;
+  refresh_rates: number[];
+  mixed_refresh: boolean;
+  hags: boolean | null;
 }
 
 export interface ShortcutsSettings {
