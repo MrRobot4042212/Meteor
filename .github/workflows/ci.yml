@@ -121,10 +121,15 @@ jobs:
       - name: Fetch bundled binaries (PresentMon + cputemp sidecar)
         run: pwsh scripts/fetch-binaries.ps1
 
-      # No signing secrets here: this proves the bundle builds, nothing more.
-      # The updater artifact it produces is unsigned and is not published.
+      # No signing secrets here: this job proves the installer builds, nothing
+      # more. `createUpdaterArtifacts` is switched off for it, because producing
+      # an updater artifact requires TAURI_SIGNING_PRIVATE_KEY and `tauri build`
+      # exits non-zero without it — the config has a public key, so it expects to
+      # sign. The real updater artifact is built and signed by the release
+      # workflow, which does have the key.
       - name: Build installer
-        run: npm run app:build
+        shell: bash
+        run: npm run app:build -- --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
   # Dependency advisories. Separate job so a new advisory in a build-time
   # dependency reports on its own instead of hiding inside the gate output.
