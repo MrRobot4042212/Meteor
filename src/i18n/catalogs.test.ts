@@ -18,7 +18,7 @@ const esKeys = keysOf(es as Catalog).sort();
 const enKeys = keysOf(en as Catalog).sort();
 
 describe('i18n catalogs', () => {
-  // The rule is 1:1 parity (CLAUDE.md §7). A missing key does not fail the build
+  // The rule is 1:1 parity. A missing key does not fail the build
   // or the typecheck — it silently renders the raw key id in the UI, which is
   // exactly the kind of thing only a test catches.
   it('has no key present in es but missing in en', () => {

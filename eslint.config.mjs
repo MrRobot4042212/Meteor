@@ -42,7 +42,7 @@ export default tseslint.config(
       // changing one is how memoization stops working. Both are bugs here.
       'react-hooks/exhaustive-deps': 'error',
 
-      // CLAUDE.md §7: no `any`, no `@ts-ignore`.
+      // House rules: no `any`, no `@ts-ignore`.
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/ban-ts-comment': 'error',
       '@typescript-eslint/no-unused-vars': [

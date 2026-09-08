@@ -218,7 +218,7 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
 - **Los juegos lanzados fuera de Meteor ya no se cronometran.** El watcher solo
   sigue a los que arrancan desde la app (era ya el comportamiento efectivo: el
   emparejamiento estaba limitado a esos), y a cambio en reposo no despierta ni
-  enumera procesos. Documentado como decisión en `CLAUDE.md` §4.
+  enumera procesos.
 - **Búsqueda: a igualdad de coincidencia gana el título más corto**
   (`fuzzy.ts`), así "portal" ordena *Portal* antes que *Portal Knights*.
 - **Métricas más ligeras durante el juego (menos CPU en segundo plano)**: tres recortes
