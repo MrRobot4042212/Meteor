@@ -10,7 +10,58 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
 
 ## [No publicado] — Trabajo en curso
 
+### Cambiado
+- **Publicar es ahora mergear en la rama `deploy`** (`release.yml`): antes se
+  publicaba empujando una etiqueta `v*` a mano. Ahora la versión se lee del
+  proyecto, la etiqueta la crea la automatización — así no puede discrepar de lo
+  que se ha compilado — y la publicación se niega a salir si los cinco ficheros
+  de versión no coinciden entre sí o si esa versión ya está publicada. Esto
+  último es la red contra mergear sin subir la versión: republicar la misma
+  versión no llega a nadie, porque el actualizador nunca va hacia atrás.
+
+---
+
+## [0.1.2] — 2026-09-09
+
 ### Rendimiento
+- **Instalador 1,8 MB más pequeño** (`tauri.conf.json`): incrustaba el instalador
+  de WebView2, que **igualmente necesita conexión a internet** para funcionar y
+  cuya única ventaja era Windows 7, una versión que la aplicación no soporta.
+- **Los comandos pesados ya no pueden dejar la aplicación sin atender**
+  (`lib.rs`): marcar un comando como asíncrono en Tauri **no** lo saca del grupo
+  de hilos de trabajo cuando su cuerpo es bloqueante — lo ejecuta tal cual dentro
+  de uno de ellos, y solo hay tantos como núcleos. Bastaban unas cuantas
+  búsquedas de carátula simultáneas (hasta 6 s de conexión más 8 s de lectura,
+  por tres variantes de nombre) para que no quedara ningún hilo libre y todo lo
+  demás — la biblioteca en caché, los ajustes, la respuesta al lanzar un juego —
+  se quedara en cola. Ahora el escaneo, las carátulas, los iconos, el tamaño de
+  carpeta y la comprobación de cambios se ejecutan en el grupo de hilos de
+  bloqueo, que crece bajo demanda. Además hay un límite propio de 4 búsquedas de
+  carátula simultáneas dentro de la aplicación, en vez de depender solo del de la
+  interfaz.
+- **El escaneo de Game Pass ya no lanza PowerShell cada vez** (`xbox.rs`,
+  `fingerprint.rs`): enumerar los paquetes instalados arranca un proceso de
+  PowerShell y consulta todos los paquetes del sistema, y eso ocurría en cada
+  escaneo — con el refresco de 15 minutos, casi un centenar de procesos al día.
+  Ahora el resultado se reutiliza mientras la huella de la biblioteca no cambie,
+  y esa huella incluye `WindowsApps`, que es donde se instalan buena parte de los
+  juegos de Game Pass y que antes no se vigilaba.
+- **El HUD deja de rehacer su tipografía en cada fotograma**
+  (`overlay_dcomp.rs`): en cada dibujado creaba los tres formatos de texto y
+  medía dieciocho cadenas, ocho de las cuales son etiquetas fijas que no cambian
+  nunca, más una medición del alto de línea. Todo eso depende solo del tamaño de
+  fuente y de la escala del monitor, así que ahora se calcula una vez y se
+  reutiliza. El ancho del HUD además se redondea a múltiplos de 16 píxeles: antes
+  cambiaba al pasar de 99 a 100 FPS o de 9,9 a 10,0 GB, y cada cambio reasignaba
+  los búferes de la ventana, lo que puede sacar al HUD de su plano de hardware en
+  mitad de la partida.
+- **La ventana del overlay ya no carga el launcher entero** (`lib.rs`,
+  `src/app/overlay/`): ambas ventanas compartían documento y decidían qué mostrar
+  al arrancar, así que para dibujar un panel de ajustes se descargaba y evaluaba
+  todo el launcher — la rejilla, la pantalla de inicio, el buscador — **mientras
+  el juego está corriendo**. Ahora cada ventana tiene su propio documento. Medido
+  sobre el paquete compilado: el overlay pasa de 855 880 a 786 976 bytes de
+  JavaScript inicial, y el launcher de 855 880 a 841 151.
 - **Pulsar Jugar ya no congela la interfaz** (`playtime.rs`): el vigilante de
   procesos mantenía tomado el cerrojo de "juegos lanzados desde Meteor" durante
   todo su ciclo — una enumeración completa de procesos, la reescritura de
@@ -342,6 +393,21 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
   no se hace ninguna petición de ficha a IGDB ni a Google Translate.
 
 ### Seguridad y privacidad
+- **La clave de firma del actualizador ya no comparte caché con nadie**
+  (`release.yml`): el trabajo que la usa restauraba la caché de compilación de
+  Rust, que escribe cualquier cambio subido a la rama principal. Eso significaba
+  que contenido ajeno podía acabar enlazado dentro del binario firmado que se
+  distribuye solo a todos los usuarios en cuestión de minutos. Ahora ese trabajo
+  compila en frío.
+- **Permisos mínimos en la automatización** (`ci.yml`, `release.yml`): ambos
+  flujos declaran acceso de solo lectura por defecto y solo el paso de
+  publicación obtiene escritura; además la credencial de la automatización deja
+  de quedarse guardada en el repositorio descargado, donde la heredaban todos los
+  pasos siguientes, incluidos los que instalan dependencias.
+- **Dependencias con avisos de seguridad, actualizadas**: se cierran 5 avisos
+  altos o críticos (Next.js, sharp, postcss, nanoid, browserslist) y se añade una
+  comprobación de vulnerabilidades a la automatización para que los próximos no
+  pasen desapercibidos.
 - **El sidecar de temperatura ya no deja su driver de kernel cargado al cerrar
   Meteor** (`sidecar/cputemp/Program.cs`, `cputemp.rs`, `lib.rs`).
   LibreHardwareMonitor instala y arranca un driver de kernel para leer la
@@ -381,6 +447,14 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
   posee la combinación, el fallo se registra en vez de quedar en silencio.
 
 ### Corregido
+- **Publicar una versión con la etiqueta equivocada ya no rompe las
+  actualizaciones en silencio** (`release.yml`): nada comprobaba que la etiqueta
+  coincidiera con la versión escrita en el proyecto. La publicación se nombra con
+  la etiqueta pero el archivo que lee el actualizador toma la versión del
+  proyecto, así que etiquetar `v0.2.0` sobre un árbol que dice `0.1.2` publicaba
+  una versión llamada v0.2.0 que anunciaba 0.1.2 — y las actualizaciones se
+  paraban sin ningún error visible. Ahora la publicación falla antes de subir
+  nada.
 - **Las carátulas descargadas de IGDB salían rotas** (`igdb.rs`, `art.rs`): la
   búsqueda devolvía una URL de imagen ya montada, pero quien la recibía la
   guardaba en el campo del **identificador** de imagen y volvía a montar una URL

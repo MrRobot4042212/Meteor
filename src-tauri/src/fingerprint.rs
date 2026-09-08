@@ -17,6 +17,32 @@
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+/// Drive roots (`C:\`, `D:\`…) that are actually fixed disks.
+///
+/// This used to probe all 26 letters with `Path::exists()`. On a machine with a
+/// mapped-but-disconnected network drive that blocks on the SMB redirector
+/// timeout — seconds, sometimes tens of seconds — inside a call the frontend
+/// makes every 15 minutes; it also touched optical and removable drives for no
+/// reason. `GetLogicalDrives` + `GetDriveTypeW` answers from a bitmask instead.
+#[cfg(windows)]
+fn fixed_drives() -> Vec<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
+
+    // SAFETY: no arguments, no pointers; returns a bitmask of present drives.
+    let mask = unsafe { GetLogicalDrives() };
+    (0u32..26)
+        .filter(|i| mask & (1 << i) != 0)
+        .map(|i| format!("{}:\\", (b'A' + i as u8) as char))
+        .filter(|root| {
+            let wide = HSTRING::from(root.as_str());
+            // SAFETY: `wide` is a NUL-terminated wide string that outlives the call.
+            unsafe { GetDriveTypeW(&wide) == DRIVE_FIXED }
+        })
+        .collect()
+}
+
 /// Mix a value into a running FNV-1a hash.
 fn mix(hash: &mut u64, bytes: &[u8]) {
     for byte in bytes {
@@ -66,14 +92,14 @@ pub fn compute() -> u64 {
         );
     }
 
-    // Xbox / Game Pass: the per-drive game roots.
+    // Xbox / Game Pass: the per-drive game roots, plus the AppX install root that
+    // `xbox::scan_appx` actually reads. Without `WindowsApps` a Game Pass title
+    // installed there moved nothing here, so `library_changed` answered "no" and
+    // the cached AppX enumeration kept serving a stale list.
     #[cfg(windows)]
-    for letter in b'A'..=b'Z' {
-        let root = format!("{}:\\XboxGames", letter as char);
-        let path = Path::new(&root);
-        if path.exists() {
-            mix_path(&mut hash, path);
-        }
+    for drive in fixed_drives() {
+        mix_path(&mut hash, &Path::new(&drive).join("XboxGames"));
+        mix_path(&mut hash, &Path::new(&drive).join("Program Files/WindowsApps"));
     }
 
     // Everything else (GOG, EA, Ubisoft, Battle.net, generic apps) is discovered

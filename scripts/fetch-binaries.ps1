@@ -8,9 +8,11 @@
   third-party download, the other is built from `src-tauri/sidecar/cputemp`).
   A fresh clone therefore cannot `cargo check`/`cargo build` until this runs.
 
-  PresentMon is pinned by version **and verified by SHA-256**: it is an
-  unsigned-by-us third-party executable that ends up inside our signed
-  installer, so a silent upstream swap must fail the build, not ship.
+  PresentMon is pinned by version **and verified by SHA-256**: it is a
+  third-party executable that gets bundled into the installer and then runs
+  elevated on the user's machine, so a silent upstream swap must fail the build,
+  not ship. (The installer itself is not Authenticode-signed yet, which is
+  exactly why this hash check carries the weight.)
 
 .EXAMPLE
   pwsh scripts/fetch-binaries.ps1

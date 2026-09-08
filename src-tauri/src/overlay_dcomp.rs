@@ -78,6 +78,30 @@ struct Dcomp {
     last_y: i32,
     visible: bool,
     last_sig: u64,
+    /// DirectWrite objects that depend only on the configured sizes, not on the
+    /// sampled values. See `TextCache`.
+    text_cache: Option<TextCache>,
+}
+
+/// Per-frame-invariant DirectWrite state, rebuilt only when the font size or the
+/// monitor scale changes.
+///
+/// The render path used to call `CreateTextFormat` three times and
+/// `CreateTextLayout` about eighteen times **per drawn frame**. `CreateTextLayout`
+/// runs itemization, shaping and font fallback; it is the most expensive call in
+/// the path. Eight of those layouts measured the row labels, which are
+/// `&'static str` that never change, and one measured the string `"0"` purely to
+/// obtain the line height. All of it depends on `(font_size, scale)` alone.
+struct TextCache {
+    /// `(label_px, value_px, title_px)` as raw bits — the key that invalidates it.
+    key: (u32, u32, u32),
+    label: IDWriteTextFormat,
+    value: IDWriteTextFormat,
+    title: IDWriteTextFormat,
+    /// Line height, from measuring a digit once in the value format.
+    value_h: f32,
+    /// UTF-16 text and measured width per row label, keyed by the label itself.
+    labels: std::collections::HashMap<&'static str, (Vec<u16>, f32)>,
 }
 
 impl Drop for Dcomp {
@@ -266,6 +290,7 @@ unsafe fn init() -> Result<Dcomp> {
         last_y: i32::MIN,
         visible: false,
         last_sig: 0,
+        text_cache: None,
     })
 }
 
@@ -317,6 +342,83 @@ impl Dcomp {
             }
             Err(_) => (0.0, 0.0),
         }
+    }
+
+    /// Ensure `text_cache` matches these sizes, rebuilding it only when they move.
+    ///
+    /// Returns the three formats (a clone is a COM `AddRef`, not a creation) and
+    /// the cached line height, so the caller holds no borrow of `self` and can go
+    /// on to call `resize`.
+    unsafe fn text_state(
+        &mut self,
+        label_px: f32,
+        value_px: f32,
+        title_px: f32,
+        labels: &[&'static str],
+    ) -> Result<(IDWriteTextFormat, IDWriteTextFormat, IDWriteTextFormat, f32)> {
+        let key = (
+            label_px.to_bits(),
+            value_px.to_bits(),
+            title_px.to_bits(),
+        );
+        if self.text_cache.as_ref().map(|c| c.key) != Some(key) {
+            let label = self.make_format(label_px, false, false)?;
+            let value = self.make_format(value_px, true, true)?;
+            let title = self.make_format(title_px, true, false)?;
+            let (_, value_h) = self.measure(&value, &to_wide("0"));
+            self.text_cache = Some(TextCache {
+                key,
+                label,
+                value,
+                title,
+                value_h,
+                labels: std::collections::HashMap::new(),
+            });
+        }
+
+        // Measure any label not seen yet at this size. The set is small and fixed
+        // (one entry per metric row), so this converges after the first frame.
+        let missing: Vec<&'static str> = {
+            let cache = match self.text_cache.as_ref() {
+                Some(c) => c,
+                None => return Err(windows::core::Error::empty()),
+            };
+            labels
+                .iter()
+                .copied()
+                .filter(|l| !cache.labels.contains_key(l))
+                .collect()
+        };
+        for l in missing {
+            let text = to_wide(l);
+            let fmt = match self.text_cache.as_ref() {
+                Some(c) => c.label.clone(),
+                None => return Err(windows::core::Error::empty()),
+            };
+            let (w, _) = self.measure(&fmt, &text);
+            if let Some(c) = self.text_cache.as_mut() {
+                c.labels.insert(l, (text, w));
+            }
+        }
+
+        let cache = match self.text_cache.as_ref() {
+            Some(c) => c,
+            None => return Err(windows::core::Error::empty()),
+        };
+        Ok((
+            cache.label.clone(),
+            cache.value.clone(),
+            cache.title.clone(),
+            cache.value_h,
+        ))
+    }
+
+    /// UTF-16 text and width for a cached row label.
+    fn cached_label(&self, label: &'static str) -> Option<(Vec<u16>, f32)> {
+        self.text_cache
+            .as_ref()
+            .and_then(|c| c.labels.get(label))
+            .map(|(t, w)| (t.clone(), *w))
     }
 
     unsafe fn resize(&mut self, w: i32, h: i32) -> Result<()> {
@@ -459,11 +561,15 @@ unsafe fn render_inner(
     let div_gap = (4.0 * s).round();
     let min_w = (148.0 * s).round();
 
-    let label_fmt = d.make_format(label_px * s, false, false)?;
-    let value_fmt = d.make_format(value_px * s, true, true)?;
-    let title_fmt = d.make_format(10.0 * s, true, false)?;
+    // Formats, the line-height probe and the static label widths all depend only
+    // on (font_size, scale), so they are built once per config change instead of
+    // once per frame.
+    let labels: Vec<&'static str> = rows.iter().map(|r| r.label).collect();
+    let (label_fmt, value_fmt, title_fmt, value_h) =
+        d.text_state(label_px * s, value_px * s, 10.0 * s, &labels)?;
 
-    // Measure.
+    // Measure. Only the values are measured per frame — they are the only part
+    // that actually changes between ticks.
     let mut inner_w = 0.0f32;
     let title_wide = title_str.as_deref().map(to_wide);
     let mut title_h = 0.0f32;
@@ -472,18 +578,30 @@ unsafe fn render_inner(
         title_h = th;
         inner_w = inner_w.max(tw);
     }
-    let (_, value_h) = d.measure(&value_fmt, &to_wide("0"));
     let mut measured: Vec<(Vec<u16>, Vec<u16>)> = Vec::with_capacity(rows.len());
     for r in &rows {
-        let lw_text = to_wide(r.label);
+        let (lw_text, lw) = match d.cached_label(r.label) {
+            Some(v) => v,
+            // Not cached (an unexpected label): fall back to measuring it.
+            None => {
+                let text = to_wide(r.label);
+                let (w, _) = d.measure(&label_fmt, &text);
+                (text, w)
+            }
+        };
         let vw_text = to_wide(&r.value);
-        let (lw, _) = d.measure(&label_fmt, &lw_text);
         let (vw, _) = d.measure(&value_fmt, &vw_text);
         inner_w = inner_w.max(lw + gap + vw);
         measured.push((lw_text, vw_text));
     }
 
-    let w = (inner_w + pad_x * 2.0).max(min_w).ceil() as i32;
+    // Quantized to a 16 px step. The raw width moves whenever the widest value
+    // gains or loses a digit (99 → 100 fps, 9.9 → 10.0 GB), and every change calls
+    // `ResizeBuffers`, which reallocates the swapchain buffers and can knock the
+    // HUD off its MPO hardware plane mid-game.
+    const WIDTH_STEP: i32 = 16;
+    let raw_w = (inner_w + pad_x * 2.0).max(min_w).ceil() as i32;
+    let w = (raw_w + WIDTH_STEP - 1) / WIDTH_STEP * WIDTH_STEP;
     let title_block = if title_wide.is_some() {
         title_h + title_gap + 1.0 + div_gap
     } else {

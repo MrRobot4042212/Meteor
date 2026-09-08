@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // IGDB (Twitch) app credentials. **Build-time environment only**: they are read
@@ -131,6 +131,42 @@ fn token() -> Option<String> {
     Some(value)
 }
 
+/// Maximum IGDB lookups allowed in flight at once.
+///
+/// The only bound used to be the frontend's worker pool. Nothing in Rust stopped
+/// a second window, a future caller or two overlapping scans from firing hundreds
+/// of concurrent lookups, each holding a blocking-pool thread for up to a 6 s
+/// connect plus an 8 s read, times three name variants. A limit that protects the
+/// process belongs in the process.
+const MAX_INFLIGHT: usize = 4;
+static INFLIGHT: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+
+/// RAII permit: releases its slot however the lookup ends, early return included.
+struct Permit;
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        let (lock, cv) = &INFLIGHT;
+        let mut n = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        *n = n.saturating_sub(1);
+        cv.notify_one();
+    }
+}
+
+/// Block until a slot is free. Callers already run on the blocking pool, which is
+/// exactly where waiting is allowed.
+fn acquire_permit() -> Permit {
+    let (lock, cv) = &INFLIGHT;
+    let mut n = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    while *n >= MAX_INFLIGHT {
+        n = cv
+            .wait(n)
+            .unwrap_or_else(|e| e.into_inner());
+    }
+    *n += 1;
+    Permit
+}
+
 /// Outcome of a cover lookup.
 ///
 /// "IGDB has nothing for this game" and "we could not ask IGDB" are different
@@ -176,6 +212,8 @@ pub fn resolve_cover(variants: &[String]) -> Lookup {
     let Some(token) = token() else {
         return Lookup::Unavailable;
     };
+    // Held for the whole lookup, including every name variant.
+    let _permit = acquire_permit();
     let agent = agent();
     let bearer = format!("Bearer {token}");
 

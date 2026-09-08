@@ -29,7 +29,6 @@ import { Home } from '@/components/Home';
 import { TopBar, type SortKey } from '@/components/TopBar';
 import { UpdatePrompt } from '@/components/UpdatePrompt';
 import { useTranslation } from 'react-i18next';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { SOURCE_ORDER } from '@/lib/sources';
 import { fuzzyScore } from '@/lib/fuzzy';
 import {
@@ -60,7 +59,6 @@ const DetailView = dynamic(() => import('@/components/DetailView').then((m) => m
 const NotificationsPanel = dynamic(() => import('@/components/NotificationsPanel').then((m) => m.NotificationsPanel), { ssr: false });
 const Onboarding = dynamic(() => import('@/components/Onboarding').then((m) => m.Onboarding), { ssr: false });
 const GuidedTour = dynamic(() => import('@/components/GuidedTour').then((m) => m.GuidedTour), { ssr: false });
-const Overlay = dynamic(() => import('@/components/Overlay').then((m) => m.Overlay), { ssr: false });
 
 /** Folder to reveal for a game: its install dir, else the exe's parent. */
 function folderOf(game: Game): string | null {
@@ -72,28 +70,15 @@ function folderOf(game: Game): string | null {
 }
 
 /**
- * Root: the same bundle backs two windows. The dedicated `overlay` window renders
- * only the metrics HUD; the `main` window renders the full launcher. We resolve
- * the window label on the client (Tauri isn't present at static-export build time).
+ * Root: the launcher window.
+ *
+ * This document used to back both windows and pick a tree from the window label
+ * at runtime, which meant the launcher bundle had to contain the overlay and the
+ * overlay had to contain the launcher. The overlay now has its own route
+ * (`src/app/overlay/page.tsx`), so each window loads only what it renders.
  */
-/** Which window this document is in. Read synchronously: `getCurrentWindow()`
- *  needs no round trip, and doing it in an effect cost a wasted render pass plus
- *  a frame of blank window at every startup. */
-function windowLabel(): string {
-  try {
-    return getCurrentWindow().label;
-  } catch {
-    // Not running under Tauri (e.g. plain `next dev`): default to the main app.
-    return 'main';
-  }
-}
-
 export default function Root() {
-  // `useState` with an initializer so it runs once, on the client, before paint.
-  const [mode] = useState<'main' | 'overlay'>(() =>
-    windowLabel() === 'overlay' ? 'overlay' : 'main',
-  );
-  return mode === 'overlay' ? <Overlay /> : <MainApp />;
+  return <MainApp />;
 }
 
 function MainApp() {

@@ -2,7 +2,21 @@ use crate::models::{Game, GameSource};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+/// Last AppX enumeration, keyed by the library fingerprint it was taken under.
+///
+/// `scan_appx` spawns PowerShell and runs `Get-AppxPackage` over every installed
+/// package plus a manifest read per candidate — seconds of work, inside the
+/// `thread::scope` every other scanner joins on, so it sets the floor for the
+/// whole library scan. It ran unconditionally on every call, which with the
+/// 15-minute refresh is ~96 PowerShell processes a day to answer a question whose
+/// answer changes when someone installs a Game Pass game.
+///
+/// The fingerprint covers `XboxGames` and `WindowsApps` on every fixed drive, so
+/// an install moves it and the next scan re-enumerates.
+static APPX_CACHE: Mutex<Option<(u64, Vec<Game>)>> = Mutex::new(None);
 
 /// Scan Xbox / Microsoft Store (Game Pass) games.
 ///
@@ -11,12 +25,30 @@ use std::time::{Duration, Instant};
 /// also catches games installed to `WindowsApps`, not just `XboxGames`. We
 /// resolve each game's AUMID so it launches through the shell like the Store
 /// does. If PowerShell is unavailable we fall back to scanning `XboxGames`.
-pub fn scan() -> Result<Vec<Game>, String> {
+pub fn scan(fingerprint: u64) -> Result<Vec<Game>, String> {
     let _span = crate::perf::Span::new("xbox::scan");
+
+    if let Some((cached_fp, games)) = APPX_CACHE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+    {
+        // Fingerprint 0 means "unknown" (the caller could not compute one), which
+        // must never satisfy the cache.
+        if *cached_fp != 0 && *cached_fp == fingerprint {
+            return Ok(games.clone());
+        }
+    }
+
     let appx = scan_appx();
     if !appx.is_empty() {
+        *APPX_CACHE.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((fingerprint, appx.clone()));
         return Ok(appx);
     }
+    // An empty result is not cached: it is indistinguishable from "PowerShell was
+    // unavailable this time", and caching it would hide Game Pass games until the
+    // fingerprint happened to move.
     Ok(scan_folders())
 }
 

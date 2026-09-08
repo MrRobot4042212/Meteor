@@ -1,13 +1,30 @@
 name: release
 
-# Build, sign and publish a Windows release whenever a version tag is pushed
-# (e.g. `git tag v0.2.0 && git push origin v0.2.0`). tauri-action creates the
-# GitHub Release and uploads `latest.json`, which the in-app updater reads from
-# the "releases/latest/download/latest.json" endpoint.
+# Build, sign and publish a Windows release when something lands on `deploy`.
+#
+# The flow is: work on master → merge master into deploy → this runs. The version
+# comes from the tree (all five files must already agree), and the tag `vX.Y.Z` is
+# created by tauri-action, not by hand. tauri-action creates the GitHub Release and
+# uploads `latest.json`, which the in-app updater reads from the
+# "releases/latest/download/latest.json" endpoint.
+#
+# READ THIS BEFORE MERGING: there is no draft step. A merge into `deploy` publishes
+# to every existing installation, which auto-updates within minutes. Merge when you
+# mean to ship, not to "save progress".
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [deploy]
+  # Manual re-run, for when a publish failed after the gates passed (a flaky
+  # upload, an expired secret) and nothing in the tree needs to change.
+  workflow_dispatch:
+
+# Read-only by default; only the release job is granted write.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   # Same gates as every PR (typecheck, build, clippy -D warnings, cargo test).
@@ -23,6 +40,8 @@ jobs:
     steps:
       # Actions pinned by commit SHA: these steps see the updater signing key.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -31,10 +50,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          workspaces: src-tauri
+      # Deliberately NOT cached. This job holds TAURI_SIGNING_PRIVATE_KEY, and a
+      # cargo cache is written by every push to master: restoring it here would
+      # link whatever is in someone else's `target/` into the signed binary that
+      # auto-updates every user within minutes. A release is worth a cold build.
 
       - name: Install frontend deps
         run: npm ci
@@ -43,7 +62,12 @@ jobs:
       # The ADLX shim (AMD GPU) compiles from vendored sources via build.rs, so it
       # needs no step here. PresentMon (NVIDIA FPS) and the cputemp sidecar (CPU
       # temp) are produced into src-tauri/binaries/ by the shared script, which
-      # verifies PresentMon's SHA-256 before it can end up in a signed installer.
+      # verifies PresentMon's SHA-256 before it is bundled.
+      #
+      # Note the installer is NOT Authenticode-signed. Only the updater artifact
+      # is signed, with minisign, which protects an update in flight but does
+      # nothing for the first install: users get SmartScreen's "unknown
+      # publisher" every time.
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '8.0.x'
@@ -52,6 +76,48 @@ jobs:
 
       - name: Fetch bundled binaries (PresentMon + cputemp sidecar)
         run: pwsh scripts/fetch-binaries.ps1
+
+      # The version now comes from the tree, so the tree has to be self-consistent.
+      # tauri-action takes the artifact version — and the `latest.json` the updater
+      # reads — from tauri.conf.json, while package.json and the two lockfiles feed
+      # everything else. One file left behind and the release announces a version
+      # that does not match what it installs, with no error anywhere.
+      #
+      # It also refuses to publish a version that already has a tag: merging into
+      # `deploy` without bumping first would otherwise try to re-release the same
+      # version over the previous one. The updater never moves sideways, so that
+      # publish would reach nobody while looking like a success.
+      - name: Resolve and verify the version
+        id: version
+        shell: pwsh
+        run: |
+          $conf     = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $pkg      = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $lock     = (Get-Content package-lock.json -Raw | ConvertFrom-Json)
+          $lockTop  = $lock.version
+          $lockSelf = $lock.packages.''.version
+          $cargo    = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
+                       Select-Object -First 1).Matches[0].Groups[1].Value
+          $lockRs   = (Get-Content src-tauri/Cargo.lock -Raw |
+                       Select-String -Pattern 'name = "meteor"\r?\nversion = "([^"]+)"').Matches[0].Groups[1].Value
+
+          Write-Host "tauri.conf.json=$conf package.json=$pkg package-lock(top)=$lockTop package-lock(self)=$lockSelf Cargo.toml=$cargo Cargo.lock=$lockRs"
+          $all = @($pkg, $lockTop, $lockSelf, $cargo, $lockRs)
+          if ($all | Where-Object { $_ -ne $conf }) {
+            throw "Version mismatch across the five files. tauri.conf.json says $conf. Bump every file (see the release skill) before merging into deploy."
+          }
+          if ($conf -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Version '$conf' is not a plain X.Y.Z semver."
+          }
+
+          # A tag for this version already exists → the merge did not bump.
+          $existing = git ls-remote --tags origin "refs/tags/v$conf"
+          if ($existing) {
+            throw "v$conf is already released. Bump the version on master and merge again; re-publishing the same version reaches nobody, because the updater never moves sideways."
+          }
+
+          "version=$conf" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Publishing v$conf"
 
       - uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
@@ -67,7 +133,10 @@ jobs:
           IGDB_CLIENT_ID: ${{ secrets.IGDB_CLIENT_ID }}
           IGDB_CLIENT_SECRET: ${{ secrets.IGDB_CLIENT_SECRET }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Meteor ${{ github.ref_name }}'
+          # tauri-action substitutes __VERSION__ with the app version and creates
+          # the tag itself, so the tag can never disagree with what was built.
+          tagName: v__VERSION__
+          releaseName: 'Meteor v__VERSION__'
+          releaseBody: 'See CHANGELOG.md for what changed in this version.'
           releaseDraft: false
           prerelease: false

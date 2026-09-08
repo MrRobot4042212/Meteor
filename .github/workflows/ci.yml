@@ -10,13 +10,28 @@ on:
   pull_request:
   workflow_call:
 
+# Least privilege by default. Without this the GITHUB_TOKEN inherits the
+# repository default (often read/write) on every push and pull request, and
+# `actions/checkout` persists it into .git/config for every later step —
+# including `npm ci` and the PowerShell fetch script.
+permissions:
+  contents: read
+
+# One run per ref: a second push supersedes the first instead of racing it for
+# the shared caches.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 # Actions are pinned by commit SHA, not by tag: a tag is mutable, and these
-# actions run with access to the release signing secrets.
+# actions run in the same workflow chain as the release signing secrets.
 jobs:
   check:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -64,3 +79,66 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test
+
+  # The installer itself. Everything above stops at `cargo test`, so the NSIS
+  # script, the install hooks, the bundled resources and the updater artifacts
+  # used to be produced for the very first time by the tag build — exactly the
+  # failure mode this workflow's header says was removed. Pull requests skip it
+  # (a full release build with fat LTO is minutes); master and the release
+  # chain run it.
+  bundle:
+    # master only. Pull requests skip it (minutes of fat LTO for every review),
+    # and on `deploy` the release workflow builds the real bundle itself with the
+    # signing secrets — running it here too would double the minutes for an
+    # artifact that gets thrown away.
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: src-tauri/sidecar/cputemp/packages.lock.json
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Fetch bundled binaries (PresentMon + cputemp sidecar)
+        run: pwsh scripts/fetch-binaries.ps1
+
+      # No signing secrets here: this proves the bundle builds, nothing more.
+      # The updater artifact it produces is unsigned and is not published.
+      - name: Build installer
+        run: npm run app:build
+
+  # Dependency advisories. Separate job so a new advisory in a build-time
+  # dependency reports on its own instead of hiding inside the gate output.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: npm audit (high and above)
+        run: npm audit --audit-level=high

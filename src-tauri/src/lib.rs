@@ -46,6 +46,31 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
+/// Run a blocking command body on the runtime's **blocking** pool.
+///
+/// `#[tauri::command(async)]` on a synchronous function does not do this, despite
+/// how it reads. The macro emits `let result = $path(args);` inside an
+/// `async move` handed to `async_runtime::spawn` (`tauri-macros/command/wrapper.rs`
+/// → `tauri/src/ipc/mod.rs`), so the whole blocking body occupies one of the
+/// runtime's *worker* threads, and there are only `available_parallelism()` of
+/// them. Enough concurrent cover lookups — each up to a 6 s connect plus an 8 s
+/// read, times three name variants — leaves no worker free to dispatch anything
+/// else, so `cached_library`, the settings and the launch response all queue
+/// behind network calls. The blocking pool grows on demand instead.
+///
+/// Use it for anything that touches the network, walks the filesystem, reads the
+/// registry, spawns a process or enumerates the system. Small in-memory work does
+/// not need it.
+async fn blocking<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("background task failed: {e}"))?
+}
+
 /// Return the unified library across every supported source, sorted by name.
 ///
 /// Each scanner runs independently: a failure in one source (store not
@@ -54,8 +79,17 @@ use tauri::{AppHandle, Emitter, Manager};
 /// deduplicated by name, so a game owned on several stores shows up once with
 /// the best available metadata (Steam first, since it ships CDN cover art).
 #[tauri::command(async)]
-fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
+async fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
+    blocking(move || get_library_inner(app)).await
+}
+
+fn get_library_inner(app: AppHandle) -> Result<Vec<Game>, String> {
     let _span = perf::Span::new("get_library");
+    // Computed *before* the scanners run, and stored afterwards. Taking it after
+    // meant a game whose install finished mid-scan was absent from the results but
+    // already reflected in the fingerprint, so `library_changed` answered "no" and
+    // it stayed invisible until something else moved. It also keys the AppX cache.
+    let fingerprint = fingerprint::compute();
     // Run all store scanners in parallel. Each is independent and failure-tolerant
     // (degrades to empty on missing store / corrupt data). Priority order is
     // preserved: store-specific scanners are extended first so they win dedup
@@ -66,7 +100,7 @@ fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
             let t_steam   = s.spawn(|| steam::scan().unwrap_or_default());
             let t_epic    = s.spawn(|| epic::scan().unwrap_or_default());
             let t_gog     = s.spawn(|| gog::scan().unwrap_or_default());
-            let t_xbox    = s.spawn(|| xbox::scan().unwrap_or_default());
+            let t_xbox    = s.spawn(|| xbox::scan(fingerprint).unwrap_or_default());
             let t_ea      = s.spawn(|| ea::scan().unwrap_or_default());
             let t_ubisoft = s.spawn(|| ubisoft::scan().unwrap_or_default());
             // Battle.net before windows_apps so its richer per-flavor WoW entries
@@ -175,7 +209,7 @@ fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
     write_library_cache(&app, &games);
     // Remember what the stores looked like, so `library_changed` can answer
     // without redoing any of this.
-    let _ = jsonstore::save(&app, FINGERPRINT_FILE, &fingerprint::compute());
+    let _ = jsonstore::save(&app, FINGERPRINT_FILE, &fingerprint);
     // The watcher re-reads the index when this file changes; nudge it so a game
     // launched right after a scan is picked up immediately.
     playtime::wake();
@@ -257,8 +291,8 @@ fn set_cover_image(
 /// Resolve a cover image for a game name via IGDB, cached on disk. The frontend
 /// calls this lazily for entries without artwork.
 #[tauri::command(async)]
-fn resolve_cover(app: AppHandle, name: String) -> Result<Option<String>, String> {
-    Ok(art::resolve(&app, &name))
+async fn resolve_cover(app: AppHandle, name: String) -> Result<Option<String>, String> {
+    blocking(move || Ok(art::resolve(&app, &name))).await
 }
 
 /// Whether anything that feeds the library has changed since the last scan.
@@ -267,23 +301,26 @@ fn resolve_cover(app: AppHandle, name: String) -> Result<Option<String>, String>
 /// whole 8-scanner + PowerShell pass is skipped. Conservative — any source it
 /// cannot read counts as changed.
 #[tauri::command(async)]
-fn library_changed(app: AppHandle) -> Result<bool, String> {
-    let current = fingerprint::compute();
-    let stored: u64 = jsonstore::load_or_default(&app, FINGERPRINT_FILE);
-    Ok(stored == 0 || stored != current)
+async fn library_changed(app: AppHandle) -> Result<bool, String> {
+    blocking(move || {
+        let current = fingerprint::compute();
+        let stored: u64 = jsonstore::load_or_default(&app, FINGERPRINT_FILE);
+        Ok(stored == 0 || stored != current)
+    })
+    .await
 }
 
 /// Resolve the high-resolution cover for the detail page hero. Reuses the cached
 /// IGDB image id, so at most it downloads one image — never a new search.
 #[tauri::command(async)]
-fn resolve_cover_hires(app: AppHandle, name: String) -> Result<Option<String>, String> {
-    Ok(art::resolve_hires(&app, &name))
+async fn resolve_cover_hires(app: AppHandle, name: String) -> Result<Option<String>, String> {
+    blocking(move || Ok(art::resolve_hires(&app, &name))).await
 }
 
 /// Wipe the cover cache (URLs + downloaded images) so everything re-resolves.
 #[tauri::command(async)]
-fn clear_cover_cache(app: AppHandle) -> Result<(), String> {
-    art::clear_cache(&app)
+async fn clear_cover_cache(app: AppHandle) -> Result<(), String> {
+    blocking(move || art::clear_cache(&app)).await
 }
 
 /// Reclassify an entry as an application or a game (`"app"` / `"game"`), or clear
@@ -444,22 +481,25 @@ fn all_playtime(
 /// validated, so the webview cannot ask for the size of an arbitrary directory.
 /// `None` = the entry has no known folder.
 #[tauri::command(async)]
-fn game_dir_size(app: AppHandle, id: String) -> Result<Option<u64>, String> {
-    let Some(game) = resolve_game(&app, &id) else {
-        return Err(format!("Entrada desconocida: {id}"));
-    };
-    let Some(folder) = game_folder(&game) else {
-        return Ok(None);
-    };
-    let dir = files::validate_dir(&folder)?;
-    Ok(Some(files::dir_size(&dir)))
+async fn game_dir_size(app: AppHandle, id: String) -> Result<Option<u64>, String> {
+    blocking(move || {
+        let Some(game) = resolve_game(&app, &id) else {
+            return Err(format!("Entrada desconocida: {id}"));
+        };
+        let Some(folder) = game_folder(&game) else {
+            return Ok(None);
+        };
+        let dir = files::validate_dir(&folder)?;
+        Ok(Some(files::dir_size(&dir)))
+    })
+    .await
 }
 
 /// Extract the real icon embedded in an app's executable (cached PNG path), used
 /// as the icon for apps without a cover or known brand logo.
 #[tauri::command(async)]
-fn app_icon(app: AppHandle, path: String) -> Result<Option<String>, String> {
-    Ok(appicons::extract(&app, &path))
+async fn app_icon(app: AppHandle, path: String) -> Result<Option<String>, String> {
+    blocking(move || Ok(appicons::extract(&app, &path))).await
 }
 
 /// Seconds the main window must stay hidden before we ask WebView2 to trim its
@@ -806,7 +846,12 @@ fn ensure_overlay_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
         return Some(w);
     }
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-    WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
+    // Its own document, not `index.html`: pointing both windows at the launcher's
+    // entry made the overlay download and evaluate the entire launcher bundle
+    // (~854 KB of eager JS, the grid and both catalogs included) to draw one
+    // settings panel while a game is running. Next code-splits per route, so this
+    // loads only the overlay tree.
+    WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("overlay.html".into()))
         .title("Meteor Overlay")
         .decorations(false)
         .transparent(true)
