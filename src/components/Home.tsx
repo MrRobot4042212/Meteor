@@ -16,7 +16,6 @@ function fmtDuration(secs: number): string {
   return `${m}m`;
 }
 
-const DAY_LABELS = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
 
 export function Home({
   games,
@@ -129,8 +128,6 @@ export function Home({
   }, [playtimes, byId]);
 
   const hasData = stats.totalSecs > 0;
-  const maxDay = Math.max(1, ...stats.days.map((d) => d.secs));
-  const todayIdx = 6;
 
   // Fallback when there's no playtime yet: surface favorites first, then the
   // rest. Favorites and non-favorites are disjoint, so ids stay unique.

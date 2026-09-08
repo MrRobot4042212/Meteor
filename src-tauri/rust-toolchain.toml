@@ -1,0 +1,6 @@
+# Pin the toolchain so a local build, CI and a release all use the same compiler.
+# Bump deliberately, together with `rust-version` in Cargo.toml.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-pc-windows-msvc"]

@@ -10,7 +10,6 @@
 //! All calls come from the single metrics sampler thread (it owns the HUD window), so
 //! backend selection lives in a `thread_local` and the COM objects never cross threads.
 
-#![cfg(windows)]
 
 use std::cell::Cell;
 
@@ -37,16 +36,16 @@ pub(crate) struct HudRow {
 }
 
 /// Parse a CSS hex color ("#rrggbb") to (r, g, b). Bad input → white.
+///
+/// Operates on bytes, never on `&str` slices: the value comes from the settings
+/// JSON, so a multi-byte character (e.g. "#ñañaña") would panic a byte-index
+/// slice on a char boundary and abort the process (`panic = "abort"`).
 pub(crate) fn parse_rgb(hex: &str) -> (u8, u8, u8) {
-    let h = hex.trim().trim_start_matches('#');
-    if h.len() >= 6 {
-        if let (Ok(r), Ok(g), Ok(b)) = (
-            u8::from_str_radix(&h[0..2], 16),
-            u8::from_str_radix(&h[2..4], 16),
-            u8::from_str_radix(&h[4..6], 16),
-        ) {
-            return (r, g, b);
-        }
+    let h = hex.trim().trim_start_matches('#').as_bytes();
+    if h.len() >= 6 && h[..6].iter().all(u8::is_ascii_hexdigit) {
+        let nib = |b: u8| (b as char).to_digit(16).unwrap_or(0) as u8;
+        let byte = |i: usize| nib(h[i]) << 4 | nib(h[i + 1]);
+        return (byte(0), byte(2), byte(4));
     }
     (255, 255, 255)
 }
@@ -150,6 +149,15 @@ pub fn hide() {
     }
 }
 
+/// Release the HUD backend entirely (window + GPU objects). The next `render`
+/// re-initializes it. No-op unless the DComp backend is live.
+pub fn teardown() {
+    if current() == 1 {
+        crate::overlay_dcomp::teardown();
+        BACKEND.with(|c| c.set(0));
+    }
+}
+
 /// Drain the HUD window's pending messages (no-op until a backend exists).
 pub fn pump() {
     if current() == 1 {
@@ -194,4 +202,28 @@ pub fn foreground() -> isize {
 /// PID owning the foreground window (0 = none); backend-independent.
 pub fn foreground_pid() -> u32 {
     crate::overlay_native::foreground_pid()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_hex_colors() {
+        assert_eq!(parse_rgb("#ff8800"), (0xff, 0x88, 0x00));
+        assert_eq!(parse_rgb("  00FF7F  "), (0x00, 0xff, 0x7f));
+        // Extra characters after the 6 hex digits are ignored (e.g. #rrggbbaa).
+        assert_eq!(parse_rgb("#10203040"), (0x10, 0x20, 0x30));
+    }
+
+    #[test]
+    fn bad_input_falls_back_to_white_without_panicking() {
+        // Regression (H7): byte-slicing "#ñañaña" split a multi-byte char and
+        // aborted the process, since the release profile uses panic = "abort".
+        assert_eq!(parse_rgb("#ñañaña"), (255, 255, 255));
+        assert_eq!(parse_rgb("鏡鏡鏡"), (255, 255, 255));
+        assert_eq!(parse_rgb("#zzzzzz"), (255, 255, 255));
+        assert_eq!(parse_rgb("#fff"), (255, 255, 255));
+        assert_eq!(parse_rgb(""), (255, 255, 255));
+    }
 }

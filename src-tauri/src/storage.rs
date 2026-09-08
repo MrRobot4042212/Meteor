@@ -1,8 +1,14 @@
+//! One JSON file per concern in the app data dir.
+//!
+//! All reads and writes go through `jsonstore`, which makes every write atomic
+//! (temp + rename) and every read distinguish "missing" from "corrupt" — a
+//! corrupt store is quarantined instead of being silently replaced by defaults
+//! and then overwritten. Never add a bare `fs::write` here.
+
+use crate::jsonstore::{self, Loaded};
 use crate::models::{AppSettings, Category, Game};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
 
 const STORE_FILE: &str = "manual_apps.json";
 const OVERRIDES_FILE: &str = "cover_overrides.json";
@@ -18,58 +24,33 @@ const DISCORD_FILE: &str = "discord.json";
 const TYPE_OVERRIDES_FILE: &str = "type_overrides.json";
 const SETTINGS_FILE: &str = "app_settings.json";
 
-
-/// Resolve a file inside the app data dir, creating the dir if needed.
-fn data_file(app: &AppHandle, file: &str) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("No se pudo obtener la carpeta de datos: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(file))
-}
-
-fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("No se pudo obtener la carpeta de datos: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(STORE_FILE))
-}
+use tauri::AppHandle;
 
 /// Load manually-added apps. Returns an empty list if nothing is stored yet.
+///
+/// Corrupt content is reported, not swallowed: manual apps are the one store the
+/// user cannot rebuild by rescanning, so the caller should surface the error.
 pub fn load_manual(app: &AppHandle) -> Result<Vec<Game>, String> {
-    let path = store_path(app)?;
-    if !path.exists() {
-        return Ok(Vec::new());
+    match jsonstore::load::<Vec<Game>>(app, STORE_FILE) {
+        Loaded::Present(games) => Ok(games),
+        Loaded::Missing => Ok(Vec::new()),
+        Loaded::Corrupt(e) => Err(format!("manual_apps.json corrupto: {e}")),
     }
-    let data = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&data).map_err(|e| format!("manual_apps.json corrupto: {e}"))
 }
 
 /// Persist the full list of manually-added apps.
 pub fn save_manual(app: &AppHandle, games: &[Game]) -> Result<(), String> {
-    let path = store_path(app)?;
-    let data = serde_json::to_string_pretty(games).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save(app, STORE_FILE, &games)
 }
 
 /// The Discord application client id for Rich Presence (empty = disabled).
 pub fn load_discord_client_id(app: &AppHandle) -> String {
-    data_file(app, DISCORD_FILE)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str::<String>(&d).ok())
-        .unwrap_or_default()
+    jsonstore::load_or_default::<String>(app, DISCORD_FILE)
 }
 
 /// Persist the Discord client id (trimmed).
 pub fn save_discord_client_id(app: &AppHandle, id: &str) -> Result<(), String> {
-    let path = data_file(app, DISCORD_FILE)?;
-    let data = serde_json::to_string(id.trim()).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save(app, DISCORD_FILE, &id.trim())
 }
 
 /// Allowed image extensions for a user-supplied (dropped/picked) cover.
@@ -86,9 +67,6 @@ pub fn save_cover_image(
     data: &[u8],
     ext: &str,
 ) -> Result<String, String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
     if data.is_empty() {
         return Err("La imagen está vacía".into());
     }
@@ -99,16 +77,10 @@ pub fn save_cover_image(
         "jpg".to_string()
     };
 
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("No se pudo obtener la carpeta de datos: {e}"))?
-        .join("user_covers");
+    let dir = jsonstore::data_dir(app)?.join("user_covers");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let mut h = DefaultHasher::new();
-    id.hash(&mut h);
-    let stem = format!("{:016x}", h.finish());
+    let stem = crate::art::cache_key(id);
 
     // Drop any previous cover for this id (possibly a different extension).
     if let Ok(entries) = fs::read_dir(&dir) {
@@ -120,28 +92,14 @@ pub fn save_cover_image(
     }
 
     let path = dir.join(format!("{stem}.{ext}"));
-    fs::write(&path, data).map_err(|e| e.to_string())?;
+    jsonstore::write_atomic(&path, data)?;
     Ok(path.to_string_lossy().to_string())
-}
-
-fn overrides_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("No se pudo obtener la carpeta de datos: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(OVERRIDES_FILE))
 }
 
 /// User-set cover overrides keyed by game id. These win over auto-resolution, so
 /// a cover can always be fixed by hand. Returns an empty map if none are stored.
 pub fn load_cover_overrides(app: &AppHandle) -> HashMap<String, String> {
-    overrides_path(app)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    jsonstore::load_or_default(app, OVERRIDES_FILE)
 }
 
 /// Set (or, with an empty url, clear) the cover override for a game id.
@@ -155,29 +113,13 @@ pub fn set_cover_override(app: &AppHandle, id: &str, url: Option<&str>) -> Resul
             map.remove(id);
         }
     }
-    let path = overrides_path(app)?;
-    let data = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
-}
-
-fn hidden_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("No se pudo obtener la carpeta de datos: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(HIDDEN_FILE))
+    jsonstore::save(app, OVERRIDES_FILE, &map)
 }
 
 /// Ids of games the user has hidden from the library (mostly false positives
 /// from the generic registry scan). Returns an empty list if none.
 pub fn load_hidden(app: &AppHandle) -> Vec<String> {
-    hidden_path(app)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    jsonstore::load_or_default(app, HIDDEN_FILE)
 }
 
 /// Hide or unhide a game id.
@@ -190,47 +132,32 @@ pub fn set_hidden(app: &AppHandle, id: &str, hidden: bool) -> Result<(), String>
     } else {
         ids.retain(|x| x != id);
     }
-    let path = hidden_path(app)?;
-    let data = serde_json::to_string_pretty(&ids).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save(app, HIDDEN_FILE, &ids)
 }
 
 /// Unhide everything.
 pub fn clear_hidden(app: &AppHandle) -> Result<(), String> {
-    let path = hidden_path(app)?;
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    jsonstore::remove(app, HIDDEN_FILE)
 }
 
 /// Save the cached metadata of hidden games, so the UI can show a list to unhide.
+///
+/// Only writes when the content actually changed: this runs on **every** library
+/// scan, and for the common case (nothing hidden) it used to rewrite `[]` each
+/// time.
 pub fn save_hidden_cache(app: &AppHandle, games: &[Game]) -> Result<(), String> {
-    let path = data_file(app, HIDDEN_CACHE_FILE)?;
-    let data = serde_json::to_string_pretty(games).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save_if_changed(app, HIDDEN_CACHE_FILE, &games).map(|_| ())
 }
 
 /// Load the cached metadata of hidden games.
 pub fn load_hidden_cache(app: &AppHandle) -> Result<Vec<Game>, String> {
-    let path = data_file(app, HIDDEN_CACHE_FILE)?;
-    if path.exists() {
-        let data = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&data).map_err(|e| e.to_string())
-    } else {
-        Ok(Vec::new())
-    }
+    Ok(jsonstore::load_or_default(app, HIDDEN_CACHE_FILE))
 }
 
 /// Ids the user marked as favorites. Applied as an overlay in `get_library`.
 /// Returns an empty list if none.
 pub fn load_favorites(app: &AppHandle) -> Vec<String> {
-    data_file(app, FAVORITES_FILE)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    jsonstore::load_or_default(app, FAVORITES_FILE)
 }
 
 /// Mark or unmark a game id as favorite.
@@ -243,20 +170,13 @@ pub fn set_favorite(app: &AppHandle, id: &str, favorite: bool) -> Result<(), Str
     } else {
         ids.retain(|x| x != id);
     }
-    let path = data_file(app, FAVORITES_FILE)?;
-    let data = serde_json::to_string_pretty(&ids).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save(app, FAVORITES_FILE, &ids)
 }
 
 /// User overrides for an entry's kind (id → "app" | "game"), applied as an
 /// overlay in `get_library`. Returns an empty map if none are stored.
 pub fn load_type_overrides(app: &AppHandle) -> HashMap<String, String> {
-    data_file(app, TYPE_OVERRIDES_FILE)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    jsonstore::load_or_default(app, TYPE_OVERRIDES_FILE)
 }
 
 /// Set (or clear, with `None`/`""`) the kind override for a game id. Accepts only
@@ -274,50 +194,35 @@ pub fn set_type_override(app: &AppHandle, id: &str, kind: Option<&str>) -> Resul
             map.remove(id);
         }
     }
-    let path = data_file(app, TYPE_OVERRIDES_FILE)?;
-    let data = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save(app, TYPE_OVERRIDES_FILE, &map)
 }
 
+/// Global settings, falling back to defaults on a first run.
 pub fn load_settings(app: &AppHandle) -> AppSettings {
-    let Ok(path) = data_file(app, SETTINGS_FILE) else {
-        return AppSettings {
+    match jsonstore::load::<AppSettings>(app, SETTINGS_FILE) {
+        Loaded::Present(settings) => settings,
+        _ => AppSettings {
             setup_completed: false,
             minimize_to_tray: true,
             overlay: Default::default(),
             shortcuts: Default::default(),
             language: "system".to_string(),
-        };
-    };
-    if let Ok(data) = fs::read_to_string(path) {
-        if let Ok(settings) = serde_json::from_str(&data) {
-            return settings;
-        }
-    }
-    AppSettings {
-        setup_completed: false,
-        minimize_to_tray: true,
-        overlay: Default::default(),
-        shortcuts: Default::default(),
-        language: "system".to_string(),
+        },
     }
 }
 
+/// Persist settings. Skips the write when nothing changed — the overlay hotkey
+/// goes through here on every press.
 pub fn save_settings(app: &AppHandle, settings: &AppSettings) {
-    if let Ok(path) = data_file(app, SETTINGS_FILE) {
-        let _ = fs::write(path, serde_json::to_string_pretty(settings).unwrap_or_default());
+    if let Err(e) = jsonstore::save_if_changed(app, SETTINGS_FILE, settings) {
+        eprintln!("[storage] could not save {SETTINGS_FILE}: {e}");
     }
 }
 
 /// User-assigned categories keyed by game id. Applied as an overlay in
 /// `get_library`. Returns an empty map if none are stored.
 pub fn load_categories(app: &AppHandle) -> HashMap<String, Vec<String>> {
-    data_file(app, CATEGORIES_FILE)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    jsonstore::load_or_default(app, CATEGORIES_FILE)
 }
 
 /// Replace the full category list for a game id (an empty list clears the entry).
@@ -336,30 +241,18 @@ pub fn set_categories(app: &AppHandle, id: &str, categories: &[String]) -> Resul
     } else {
         map.insert(id.to_string(), clean);
     }
-    let path = data_file(app, CATEGORIES_FILE)?;
-    let data = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save(app, CATEGORIES_FILE, &map)
 }
 
 /// Explicitly-created category names. These persist even with zero games, so a
 /// category can be created from the sidebar and used to assign games afterwards.
 pub fn load_category_names(app: &AppHandle) -> Vec<String> {
-    data_file(app, CATEGORY_NAMES_FILE)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    jsonstore::load_or_default(app, CATEGORY_NAMES_FILE)
 }
 
 /// Icon key chosen for each category (resolved to an SVG on the frontend).
 pub fn load_category_icons(app: &AppHandle) -> HashMap<String, String> {
-    data_file(app, CATEGORY_ICONS_FILE)
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    jsonstore::load_or_default(app, CATEGORY_ICONS_FILE)
 }
 
 /// Set (or, with None/empty, clear) the icon key for a category name.
@@ -377,9 +270,7 @@ pub fn set_category_icon(app: &AppHandle, name: &str, icon: Option<&str>) -> Res
             map.remove(name);
         }
     }
-    let path = data_file(app, CATEGORY_ICONS_FILE)?;
-    let data = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save(app, CATEGORY_ICONS_FILE, &map)
 }
 
 /// Every explicitly-created category with its icon (zips names + icon map).
@@ -405,9 +296,7 @@ pub fn add_category_name(app: &AppHandle, name: &str, icon: Option<&str>) -> Res
     if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
         names.push(name.to_string());
     }
-    let path = data_file(app, CATEGORY_NAMES_FILE)?;
-    let data = serde_json::to_string_pretty(&names).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())?;
+    jsonstore::save(app, CATEGORY_NAMES_FILE, &names)?;
     if icon.map(str::trim).is_some_and(|i| !i.is_empty()) {
         set_category_icon(app, name, icon)?;
     }
@@ -425,9 +314,7 @@ pub fn set_category_order(app: &AppHandle, names: &[String]) -> Result<(), Strin
             clean.push(n.to_string());
         }
     }
-    let path = data_file(app, CATEGORY_NAMES_FILE)?;
-    let data = serde_json::to_string_pretty(&clean).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())
+    jsonstore::save(app, CATEGORY_NAMES_FILE, &clean)
 }
 
 /// Rename a category everywhere: the names list (keeping its position), its icon,
@@ -464,44 +351,39 @@ pub fn rename_category_name(app: &AppHandle, old: &str, new: &str) -> Result<(),
     if !placed {
         out.push(new.to_string()); // old was in-use only → make it explicit
     }
-    let path = data_file(app, CATEGORY_NAMES_FILE)?;
-    let data = serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())?;
+    jsonstore::save(app, CATEGORY_NAMES_FILE, &out)?;
 
     // 2. Icon — carry old's icon over to new if new doesn't have one already.
     let mut icons = load_category_icons(app);
     if let Some(icon) = icons.remove(old) {
         icons.entry(new.to_string()).or_insert(icon);
     }
-    let ip = data_file(app, CATEGORY_ICONS_FILE)?;
-    let id = serde_json::to_string_pretty(&icons).map_err(|e| e.to_string())?;
-    fs::write(&ip, id).map_err(|e| e.to_string())?;
+    jsonstore::save(app, CATEGORY_ICONS_FILE, &icons)?;
 
     // 3. Every game's list — old → new, de-duplicated case-insensitively.
     let mut map = load_categories(app);
     for cats in map.values_mut() {
         let mut nc: Vec<String> = Vec::new();
         for c in cats.drain(..) {
-            let name = if c.eq_ignore_ascii_case(old) { new.to_string() } else { c };
+            let name = if c.eq_ignore_ascii_case(old) {
+                new.to_string()
+            } else {
+                c
+            };
             if !nc.iter().any(|x| x.eq_ignore_ascii_case(&name)) {
                 nc.push(name);
             }
         }
         *cats = nc;
     }
-    let cp = data_file(app, CATEGORIES_FILE)?;
-    let cd = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
-    fs::write(&cp, cd).map_err(|e| e.to_string())?;
-    Ok(())
+    jsonstore::save(app, CATEGORIES_FILE, &map)
 }
 
 /// Delete a category: remove the name, its icon, and strip it from every game.
 pub fn remove_category_name(app: &AppHandle, name: &str) -> Result<(), String> {
     let mut names = load_category_names(app);
     names.retain(|n| !n.eq_ignore_ascii_case(name));
-    let path = data_file(app, CATEGORY_NAMES_FILE)?;
-    let data = serde_json::to_string_pretty(&names).map_err(|e| e.to_string())?;
-    fs::write(&path, data).map_err(|e| e.to_string())?;
+    jsonstore::save(app, CATEGORY_NAMES_FILE, &names)?;
 
     set_category_icon(app, name, None)?;
 
@@ -510,8 +392,49 @@ pub fn remove_category_name(app: &AppHandle, name: &str) -> Result<(), String> {
         cats.retain(|c| !c.eq_ignore_ascii_case(name));
     }
     map.retain(|_, v| !v.is_empty());
-    let p = data_file(app, CATEGORIES_FILE)?;
-    let d = serde_json::to_string_pretty(&map).map_err(|e| e.to_string())?;
-    fs::write(&p, d).map_err(|e| e.to_string())?;
-    Ok(())
+    jsonstore::save(app, CATEGORIES_FILE, &map)
+}
+
+/// One-time rename of `user_covers/<DefaultHasher>.<ext>` to the FNV-1a key.
+///
+/// Unlike downloaded art, a user cover cannot be re-fetched, so the rename is
+/// driven by `cover_overrides.json` (which stores each file's absolute path)
+/// rather than by recomputing names — and the override is updated to point at
+/// the new file, so a failed rename leaves everything working as before.
+pub fn migrate_user_cover_filenames(app: &AppHandle) {
+    let Ok(dir) = jsonstore::data_dir(app).map(|d| d.join("user_covers")) else {
+        return;
+    };
+    if !dir.exists() {
+        return;
+    }
+    let mut overrides = load_cover_overrides(app);
+    let mut changed = false;
+    for (id, path) in overrides.iter_mut() {
+        let current = std::path::Path::new(path.as_str()).to_path_buf();
+        if current.parent() != Some(dir.as_path()) {
+            continue; // a remote URL or a file outside our folder
+        }
+        let Some(stem) = current.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem != crate::art::legacy_key(id) {
+            continue; // already migrated (or never used the hashed scheme)
+        }
+        let ext = current
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("jpg")
+            .to_string();
+        let target = dir.join(format!("{}.{ext}", crate::art::cache_key(id)));
+        if current.exists() && !target.exists() && fs::rename(&current, &target).is_ok() {
+            *path = target.to_string_lossy().to_string();
+            changed = true;
+        }
+    }
+    if changed {
+        if let Err(e) = jsonstore::save(app, OVERRIDES_FILE, &overrides) {
+            eprintln!("[storage] user cover migration could not be saved: {e}");
+        }
+    }
 }

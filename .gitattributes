@@ -1,0 +1,12 @@
+# Normalize line endings. `core.autocrlf` is on globally on the maintainer's
+# machine, and without this the generated Tauri schemas flip between CRLF and LF
+# on every build, leaving a permanent phantom diff.
+* text=auto eol=lf
+
+# Binary assets: never touch these.
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.pdf binary
+*.exe binary

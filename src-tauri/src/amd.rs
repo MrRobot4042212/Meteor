@@ -8,7 +8,6 @@
 //!
 //! Not thread-safe: all calls must come from the single metrics-sampler thread.
 
-#![cfg(windows)]
 
 use std::sync::Mutex;
 
@@ -145,16 +144,16 @@ pub fn sample(want_fps: bool) -> Option<GpuSample> {
     }
     let has = |bit: u32| s.flags & bit != 0;
     Some(GpuSample {
-        usage: has(F_USAGE).then(|| s.gpu_usage.round() as u32),
-        temp_c: has(F_TEMP).then(|| s.gpu_temp.round() as u32),
-        hotspot_c: has(F_HOTSPOT).then(|| s.gpu_hotspot.round() as u32),
-        power_w: has(F_POWER).then(|| s.gpu_power as f32),
-        clock_mhz: has(F_CLOCK).then(|| s.gpu_clock.max(0) as u32),
-        vram_clock_mhz: has(F_VRAM_CLOCK).then(|| s.vram_clock.max(0) as u32),
-        fan_rpm: has(F_FAN).then(|| s.fan_rpm.max(0) as u32),
-        vram_used_mb: has(F_VRAM_USED).then(|| s.vram_used_mb as u64),
-        vram_total_mb: has(F_VRAM_TOTAL).then(|| s.vram_total_mb as u64),
-        fps: has(F_FPS).then(|| s.fps.max(0) as f32),
+        usage: has(F_USAGE).then_some(s.gpu_usage.round() as u32),
+        temp_c: has(F_TEMP).then_some(s.gpu_temp.round() as u32),
+        hotspot_c: has(F_HOTSPOT).then_some(s.gpu_hotspot.round() as u32),
+        power_w: has(F_POWER).then_some(s.gpu_power as f32),
+        clock_mhz: has(F_CLOCK).then_some(s.gpu_clock.max(0) as u32),
+        vram_clock_mhz: has(F_VRAM_CLOCK).then_some(s.vram_clock.max(0) as u32),
+        fan_rpm: has(F_FAN).then_some(s.fan_rpm.max(0) as u32),
+        vram_used_mb: has(F_VRAM_USED).then_some(s.vram_used_mb as u64),
+        vram_total_mb: has(F_VRAM_TOTAL).then_some(s.vram_total_mb as u64),
+        fps: has(F_FPS).then_some(s.fps.max(0) as f32),
     })
 }
 

@@ -20,7 +20,6 @@
 //! Output goes to stderr **and** to `<app log dir>\overlay-debug.log` so it can be
 //! shared after a session.
 
-#![cfg(windows)]
 
 use std::fs::OpenOptions;
 use std::io::Write;

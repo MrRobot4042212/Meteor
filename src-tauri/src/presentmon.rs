@@ -19,8 +19,6 @@ use tauri::{AppHandle, Manager};
 /// Latest FPS / frametime as hundredths (0 = no data), so they fit in atomics.
 static FPS_X100: AtomicU32 = AtomicU32::new(0);
 static FRAMETIME_X100: AtomicU32 = AtomicU32::new(0);
-/// PID of the spawned PresentMon.exe process, to clean it up on exit.
-static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 
 /// Current FPS and average frametime (ms), if PresentMon is producing data.
 pub fn current() -> (Option<f32>, Option<f32>) {
@@ -75,27 +73,15 @@ fn spawn(bin: &Path, pid: u32) -> std::io::Result<Child> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let mut child = cmd.spawn()?;
-    CHILD_PID.store(child.id(), Ordering::Relaxed);
+    // Kill-on-close job: if Meteor dies for any reason (crash, force-quit,
+    // `panic = "abort"`), the kernel terminates this elevated child and its ETW
+    // session instead of leaving it orphaned.
+    #[cfg(windows)]
+    crate::jobobj::assign(&child);
     if let Some(out) = child.stdout.take() {
         std::thread::spawn(move || parse_stdout(out));
     }
     Ok(child)
-}
-
-/// Cleanup any running PresentMon process spawned by us. Called on app exit.
-pub fn cleanup() {
-    let pid = CHILD_PID.load(Ordering::Relaxed);
-    if pid != 0 {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            let _ = Command::new("taskkill")
-                .args(["/F", "/PID", &pid.to_string()])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
-        }
-    }
 }
 
 /// Read PresentMon's CSV stream and maintain a ~1s rolling window of frame times.
@@ -179,9 +165,16 @@ pub fn start(app: AppHandle) {
         // session — a real hitch source for users without elevation (esp. NVIDIA,
         // where PresentMon is the only FPS source). Cleared when the target changes.
         let mut failed_pid: u32 = 0;
+        let mut seen: u64 = 0;
 
         loop {
-            std::thread::sleep(Duration::from_millis(500));
+            // Park while there is nothing to target; poll only while a session is
+            // live, so an idle Meteor does not wake this thread at all.
+            let idle = !crate::metrics::want_fps() || crate::metrics::current_pid() == 0;
+            crate::metrics::wait_sidecar(
+                &mut seen,
+                (!idle || child.is_some()).then(|| Duration::from_millis(500)),
+            );
 
             let want_pid = if crate::metrics::want_fps() {
                 crate::metrics::current_pid()

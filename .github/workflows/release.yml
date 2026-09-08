@@ -10,21 +10,29 @@ on:
       - 'v*'
 
 jobs:
+  # Same gates as every PR (typecheck, build, clippy -D warnings, cargo test).
+  # A tag that would not pass CI never reaches the release job.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: ci
     runs-on: windows-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      # Actions pinned by commit SHA: these steps see the updater signing key.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
+          cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri
 
@@ -34,28 +42,18 @@ jobs:
       # --- Metrics binaries bundled as resources (see tauri.conf.json) ---------
       # The ADLX shim (AMD GPU) compiles from vendored sources via build.rs, so it
       # needs no step here. PresentMon (NVIDIA FPS) and the cputemp sidecar (CPU
-      # temp) are produced into src-tauri/binaries/ before the bundle is built.
-
-      - name: Setup .NET (cputemp sidecar)
-        uses: actions/setup-dotnet@v4
+      # temp) are produced into src-tauri/binaries/ by the shared script, which
+      # verifies PresentMon's SHA-256 before it can end up in a signed installer.
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: src-tauri/sidecar/cputemp/packages.lock.json
 
-      - name: Build CPU temp sidecar
-        run: >
-          dotnet publish src-tauri/sidecar/cputemp/cputemp.csproj
-          -c Release -r win-x64 --self-contained true
-          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:DebugType=none -o src-tauri/binaries
+      - name: Fetch bundled binaries (PresentMon + cputemp sidecar)
+        run: pwsh scripts/fetch-binaries.ps1
 
-      - name: Download PresentMon
-        shell: pwsh
-        run: |
-          Invoke-WebRequest `
-            -Uri "https://github.com/GameTechDev/PresentMon/releases/download/v2.4.1/PresentMon-2.4.1-x64.exe" `
-            -OutFile "src-tauri/binaries/PresentMon.exe"
-
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Generate the keypair once with `npm run tauri signer generate` and
@@ -63,6 +61,11 @@ jobs:
           # tauri.conf.json → plugins.updater.pubkey.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # IGDB cover lookups. Build-time only (see src-tauri/src/igdb.rs): a
+          # build without them ships with cover resolution disabled instead of
+          # embedding a shared credential in every user's binary.
+          IGDB_CLIENT_ID: ${{ secrets.IGDB_CLIENT_ID }}
+          IGDB_CLIENT_SECRET: ${{ secrets.IGDB_CLIENT_SECRET }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Meteor ${{ github.ref_name }}'

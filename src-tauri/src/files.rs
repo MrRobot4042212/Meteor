@@ -1,20 +1,87 @@
+//! Filesystem helpers for the detail page (folder size, "open folder").
+//!
+//! Everything here takes a path that Rust resolved itself — the commands in
+//! `lib.rs` take a **game id** and read `install_dir` from the library cache, so
+//! the webview can never hand us an arbitrary path. The validation below is
+//! defence in depth on top of that, plus the traversal caps that keep
+//! `dir_size` from walking a whole drive.
+
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Total size in bytes of a directory tree. Walks iteratively (no recursion
-/// limit) and skips entries it can't read instead of failing the whole call.
-pub fn dir_size(path: &str) -> Result<u64, String> {
+/// Directory-tree depth cap for `dir_size`. Deep enough for any real game
+/// install, shallow enough that a junction loop or a mount point pointing at the
+/// drive root cannot turn one IPC call into an unbounded walk.
+const MAX_DEPTH: u32 = 24;
+/// Hard cap on visited entries, for the same reason.
+const MAX_ENTRIES: u64 = 500_000;
+
+/// Absolute path to a Windows system binary. System binaries are resolved from
+/// `%SystemRoot%\System32` and never from `PATH`: Meteor can be running
+/// elevated, and a binary planted in a writable `PATH` entry would inherit that
+/// token.
+pub fn system_exe(name: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        // explorer.exe lives in %SystemRoot%, the rest in %SystemRoot%\System32.
+        let root = PathBuf::from(root);
+        let direct = root.join(name);
+        if direct.is_file() {
+            return direct;
+        }
+        root.join("System32").join(name)
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(name)
+    }
+}
+
+/// Strip the `\\?\` verbatim prefix that `canonicalize` adds on Windows;
+/// Explorer and several game launchers reject verbatim paths.
+pub fn strip_verbatim(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path.to_path_buf(),
+    }
+}
+
+/// Resolve a path and require it to be an existing directory.
+pub fn validate_dir(path: &str) -> Result<PathBuf, String> {
+    let canon =
+        fs::canonicalize(path).map_err(|e| format!("No se pudo resolver «{path}»: {e}"))?;
+    if !canon.is_dir() {
+        return Err(format!("«{path}» no es una carpeta"));
+    }
+    Ok(canon)
+}
+
+/// Total size in bytes of a directory tree. Walks iteratively, skips entries it
+/// can't read instead of failing the whole call, and stops at `MAX_DEPTH` /
+/// `MAX_ENTRIES` so a junction loop can't spin forever.
+pub fn dir_size(path: &Path) -> u64 {
     let mut total: u64 = 0;
-    let mut stack = vec![PathBuf::from(path)];
-    while let Some(dir) = stack.pop() {
+    let mut visited: u64 = 0;
+    let mut stack: Vec<(PathBuf, u32)> = vec![(path.to_path_buf(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
+            visited += 1;
+            if visited > MAX_ENTRIES {
+                return total;
+            }
+            // `file_type` does not follow symlinks/junctions, so a reparse point
+            // is neither descended into nor counted twice.
             let Ok(ft) = entry.file_type() else { continue };
             if ft.is_dir() {
-                stack.push(entry.path());
+                if depth < MAX_DEPTH {
+                    stack.push((entry.path(), depth + 1));
+                }
             } else if ft.is_file() {
                 if let Ok(md) = entry.metadata() {
                     total += md.len();
@@ -22,24 +89,161 @@ pub fn dir_size(path: &str) -> Result<u64, String> {
             }
         }
     }
-    Ok(total)
+    total
 }
 
-/// Open a folder (or a file's location) in the OS file manager.
-pub fn open_path(path: &str) -> Result<(), String> {
+/// Open a validated directory in the OS file manager.
+pub fn open_folder(dir: &Path) -> Result<(), String> {
+    let path = strip_verbatim(dir);
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer")
-            .arg(path)
+        Command::new(system_exe("explorer.exe"))
+            .arg(&path)
             .spawn()
-            .map_err(|e| format!("No se pudo abrir «{path}»: {e}"))?;
+            .map_err(|e| format!("No se pudo abrir «{}»: {e}", path.display()))?;
     }
     #[cfg(not(target_os = "windows"))]
     {
         Command::new("xdg-open")
-            .arg(path)
+            .arg(&path)
             .spawn()
-            .map_err(|e| format!("No se pudo abrir «{path}»: {e}"))?;
+            .map_err(|e| format!("No se pudo abrir «{}»: {e}", path.display()))?;
     }
     Ok(())
+}
+
+/// Hosts the detail page is allowed to open in the user's browser. The URLs are
+/// built from fixed templates with only the game name interpolated, so an
+/// allowlist is an exact fit — and it keeps a poisoned library entry from
+/// turning "open community links" into "open anything".
+const EXTERNAL_HOSTS: &[&str] = &[
+    "pcgamingwiki.com",
+    "nexusmods.com",
+    "protondb.com",
+    "duckduckgo.com",
+    "youtube.com",
+    "twitch.tv",
+    "reddit.com",
+    "speedrun.com",
+    "howlongtobeat.com",
+];
+
+/// Host of an `https://` URL, lowercased, or `None` if it is not a plain https
+/// URL we can parse without pulling in a URL crate.
+fn https_host(url: &str) -> Option<String> {
+    if url.chars().any(|c| c.is_control() || c == '"' || c == ' ') {
+        return None;
+    }
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    // No credentials in the authority: `https://evil.com@allowed.com/` reads as
+    // "allowed" to a human and as "evil.com" to nothing at all here.
+    if authority.contains('@') || authority.is_empty() {
+        return None;
+    }
+    let host = authority.split(':').next()?.to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// Whether this URL may be opened in the user's browser.
+pub fn is_allowed_external(url: &str) -> bool {
+    let Some(host) = https_host(url) else {
+        return false;
+    };
+    EXTERNAL_HOSTS
+        .iter()
+        .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+}
+
+/// Open an allowlisted external URL in the default browser.
+///
+/// The detail page used bare `<a href>` links, which navigate the **webview
+/// itself** away from the app (there is no browser chrome to come back with).
+pub fn open_external(url: &str) -> Result<(), String> {
+    if !is_allowed_external(url) {
+        return Err(format!("URL externa no permitida: «{url}»"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::{w, HSTRING, PCWSTR};
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let target = HSTRING::from(url);
+        // SAFETY: the string outlives the call; the URL was allowlisted above.
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(target.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if (result.0 as isize) <= 32 {
+            return Err(format!("No se pudo abrir «{url}»"));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir «{url}»: {e}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_urls_are_host_allowlisted() {
+        assert!(is_allowed_external("https://www.pcgamingwiki.com/w/index.php?search=Halo"));
+        assert!(is_allowed_external("https://duckduckgo.com/?q=x"));
+        // Not on the list, wrong scheme, credential trick, or a lookalike host.
+        assert!(!is_allowed_external("https://evil.example/"));
+        assert!(!is_allowed_external("http://www.reddit.com/"));
+        assert!(!is_allowed_external("https://evil.com@youtube.com/"));
+        assert!(!is_allowed_external("https://notyoutube.com/"));
+        assert!(!is_allowed_external("javascript:alert(1)"));
+        assert!(!is_allowed_external("https://youtube.com/\u{0}"));
+    }
+
+    #[test]
+    fn verbatim_prefix_is_stripped() {
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\C:\Games\Foo")),
+            PathBuf::from(r"C:\Games\Foo")
+        );
+        assert_eq!(
+            strip_verbatim(Path::new(r"C:\Games\Foo")),
+            PathBuf::from(r"C:\Games\Foo")
+        );
+    }
+
+    #[test]
+    fn validate_dir_rejects_files_and_missing_paths() {
+        let dir = std::env::temp_dir();
+        assert!(validate_dir(&dir.to_string_lossy()).is_ok());
+        assert!(validate_dir("Z:\\definitely\\not\\here\\meteor-test").is_err());
+
+        let file = dir.join("meteor-validate-dir.tmp");
+        fs::write(&file, b"x").unwrap();
+        assert!(validate_dir(&file.to_string_lossy()).is_err());
+        let _ = fs::remove_file(&file);
+    }
+
+    #[test]
+    fn dir_size_sums_files() {
+        let dir = std::env::temp_dir().join("meteor-dir-size-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("a.bin"), vec![0u8; 1000]).unwrap();
+        fs::write(dir.join("sub/b.bin"), vec![0u8; 24]).unwrap();
+        assert_eq!(dir_size(&dir), 1024);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

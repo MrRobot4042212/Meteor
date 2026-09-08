@@ -32,11 +32,17 @@ struct State {
     /// Per-user override from Ajustes; empty falls back to `DEFAULT_CLIENT_ID`.
     override_id: String,
     client: Option<DiscordIpcClient>,
+    /// Consecutive failed connection attempts, driving `BACKOFF_SECS`.
+    failures: u32,
+    /// Earliest time a new connection attempt may be made.
+    next_attempt: Option<std::time::Instant>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     override_id: String::new(),
     client: None,
+    failures: 0,
+    next_attempt: None,
 });
 
 /// The id actually used: the user's override if set, else the embedded default.
@@ -59,12 +65,22 @@ pub fn set_client_id(id: &str) {
         let _ = c.close();
     }
     s.override_id = id.trim().to_string();
+    s.failures = 0;
+    s.next_attempt = None;
 }
 
 /// True if Rich Presence is configured (a built-in or per-user id is set).
 fn configured(s: &State) -> bool {
     !effective(s).is_empty()
 }
+
+/// Backoff schedule for reconnects, in seconds.
+///
+/// The watcher retries presence on every poll for as long as a game runs, so
+/// with Discord closed this used to open a named pipe every 5 seconds forever,
+/// silently. Now failures back off to one attempt every 5 minutes and are
+/// logged once.
+const BACKOFF_SECS: &[u64] = &[5, 10, 30, 60, 300];
 
 /// Ensure there's a live connection; returns false if it can't connect.
 fn ensure(s: &mut State) -> bool {
@@ -74,7 +90,14 @@ fn ensure(s: &mut State) -> bool {
     if s.client.is_some() {
         return true;
     }
-    match DiscordIpcClient::new(effective(s)) {
+    // Still inside the backoff window from the last failure → don't even try.
+    let now = std::time::Instant::now();
+    if let Some(next) = s.next_attempt {
+        if now < next {
+            return false;
+        }
+    }
+    let connected = match DiscordIpcClient::new(effective(s)) {
         Ok(mut c) => {
             if c.connect().is_ok() {
                 s.client = Some(c);
@@ -84,7 +107,22 @@ fn ensure(s: &mut State) -> bool {
             }
         }
         Err(_) => false,
+    };
+    if connected {
+        s.failures = 0;
+        s.next_attempt = None;
+    } else {
+        let idx = (s.failures as usize).min(BACKOFF_SECS.len() - 1);
+        let wait = BACKOFF_SECS[idx];
+        if s.failures == 0 {
+            eprintln!(
+                "[discord] Rich Presence could not connect (is Discord running?); retrying with backoff"
+            );
+        }
+        s.failures = s.failures.saturating_add(1);
+        s.next_attempt = Some(now + std::time::Duration::from_secs(wait));
     }
+    connected
 }
 
 /// Show "playing `name`" with an elapsed timer from `started_at` (unix secs).

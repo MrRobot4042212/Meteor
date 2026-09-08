@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Permisos de la ventana principal: diálogos de archivo, auto-actualizador y relanzado tras instalar.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "updater:default",
+    "process:default"
+  ]
+}

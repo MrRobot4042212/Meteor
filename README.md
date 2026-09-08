@@ -12,26 +12,45 @@ frontend. No hay servidor: toda la lógica vive en Rust y se invoca desde React.
 
 ## Requisitos (Windows)
 
-1. **Node.js 18+** — https://nodejs.org
+1. **Node.js 20+** — https://nodejs.org (Next 16 lo exige; CI usa 20)
 2. **Rust** (incluye `cargo`) — https://rustup.rs
 3. **Microsoft C++ Build Tools** (workload "Desktop development with C++") —
-   https://visualstudio.microsoft.com/visual-cpp-build-tools/
-4. **WebView2** — ya viene preinstalado en Windows 11.
+   https://visualstudio.microsoft.com/visual-cpp-build-tools/ — necesario para
+   compilar el shim C++ de ADLX (métricas de GPU AMD).
+4. **.NET 8 SDK** — https://dotnet.microsoft.com/download — compila el sidecar de
+   temperatura de CPU.
+5. **WebView2** — ya viene preinstalado en Windows 11.
 
 ## Arrancar en desarrollo
 
 ```bash
 npm install
-npm run app        # = tauri dev (compila Rust + levanta Next y abre la ventana)
+powershell -File scripts/fetch-binaries.ps1   # una vez: PresentMon + sidecar
+npm run app                                   # = tauri dev
 ```
+
+`scripts/fetch-binaries.ps1` deja `PresentMon.exe` (descargado y **verificado por
+SHA-256**) y `cputemp.exe` (compilado desde `src-tauri/sidecar/cputemp`) en
+`src-tauri/binaries/`. Ambos están declarados como recursos en `tauri.conf.json`
+y excluidos del repositorio, así que sin ellos `cargo check` y el build fallan.
 
 La primera compilación de Rust tarda un poco; las siguientes son incrementales.
 
 ## Compilar el instalador
 
 ```bash
-npm run app:build  # genera .msi / .exe en src-tauri/target/release/bundle
+npm run app:build  # genera el instalador NSIS en src-tauri/target/release/bundle
 ```
+
+## Comprobaciones de calidad
+
+```bash
+npm run check      # eslint + tsc + vitest + clippy -D warnings + cargo test
+```
+
+Portadas: la resolución vía IGDB necesita credenciales **en tiempo de
+compilación** (`IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET`, ver `.env.example`). Sin
+ellas la app funciona igual, solo que no resuelve carátulas automáticamente.
 
 ---
 

@@ -14,7 +14,11 @@ export function fuzzyScore(query: string, text: string): number | null {
   const idx = t.indexOf(q);
   if (idx !== -1) {
     const wordStart = idx === 0 || /[\s\-_:.]/.test(t[idx - 1]);
-    return 1000 - idx + (wordStart ? 200 : 0) + q.length * 2;
+    // Sub-point tiebreaker: with two equally good hits, prefer the shorter
+    // title, so searching "portal" ranks Portal above Portal Knights. Always
+    // < 1, so it can never outweigh the position/word-start bonuses.
+    const brevity = Math.min(t.length, 100) / 100;
+    return 1000 - idx + (wordStart ? 200 : 0) + q.length * 2 - brevity;
   }
 
   // Subsequence match with consecutive / word-boundary bonuses.

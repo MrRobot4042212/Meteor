@@ -20,20 +20,27 @@
         "resizable": true,
         "center": true,
         "dragDropEnabled": false,
-        "maximized": true
+        "maximized": true,
+        "visible": false
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https: data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost asset: http://asset.localhost; media-src 'self' asset: http://asset.localhost; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/covers/**", "$APPDATA/user_covers/**"]
-      }
+        "scope": [
+          "$APPDATA/covers/**",
+          "$APPDATA/user_covers/**"
+        ]
+      },
+      "devCsp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https: data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; connect-src ipc: http://ipc.localhost asset: http://asset.localhost ws://localhost:3000 http://localhost:3000; object-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis"
+    ],
     "createUpdaterArtifacts": true,
     "resources": [
       "binaries/PresentMon.exe",
@@ -49,6 +56,9 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "installerHooks": "hooks.nsi"
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
       }
     }
   },

@@ -1,0 +1,33 @@
+# Keep the four dependency surfaces current. Grouped and monthly on purpose: an
+# app this size does not need a PR per patch bump, but it does need the security
+# advisories to arrive on their own instead of during a release.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      frontend:
+        patterns: ['*']
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      rust:
+        patterns: ['*']
+
+  - package-ecosystem: nuget
+    directory: /src-tauri/sidecar/cputemp
+    schedule:
+      interval: monthly
+
+  # Actions are SHA-pinned, so this is the only thing that will move them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

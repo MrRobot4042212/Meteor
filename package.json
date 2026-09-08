@@ -5,10 +5,13 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "lint": "next lint",
+    "lint": "eslint .",
     "tauri": "tauri",
     "app": "tauri dev",
-    "app:build": "tauri build"
+    "app:build": "tauri build",
+    "test": "vitest run",
+    "check": "npm run lint && npx tsc --noEmit && npm run test && npm run check:rust",
+    "check:rust": "cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
@@ -22,13 +25,23 @@
     "react-i18next": "^17.0.8"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@next/eslint-plugin-next": "^16.3.4",
     "@tauri-apps/cli": "^2.11.3",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "autoprefixer": "^10.4.20",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^6.1.1",
+    "globals": "^15.15.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.19",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

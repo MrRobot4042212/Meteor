@@ -11,11 +11,16 @@ mod battlenet;
 mod ea;
 mod epic;
 mod files;
+mod fingerprint;
 mod gog;
 mod igdb;
+mod jsonstore;
+#[cfg(windows)]
+mod jobobj;
 mod launcher;
 mod metrics;
 mod models;
+mod perf;
 #[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
@@ -48,8 +53,9 @@ use tauri::{AppHandle, Emitter, Manager};
 /// instead of failing the whole call. Sources are merged in priority order and
 /// deduplicated by name, so a game owned on several stores shows up once with
 /// the best available metadata (Steam first, since it ships CDN cover art).
-#[tauri::command]
+#[tauri::command(async)]
 fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
+    let _span = perf::Span::new("get_library");
     // Run all store scanners in parallel. Each is independent and failure-tolerant
     // (degrades to empty on missing store / corrupt data). Priority order is
     // preserved: store-specific scanners are extended first so they win dedup
@@ -146,50 +152,97 @@ fn get_library(app: AppHandle) -> Result<Vec<Game>, String> {
         }
     }
 
-    games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    // Fill in covers we already downloaded. Without this the frontend re-queued
+    // every non-Steam entry through `resolve_cover` on *every* refresh, even
+    // though the image was sitting on disk: N IPC round-trips and N re-renders
+    // for nothing.
+    for game in &mut games {
+        if game.cover_url.is_none() && game.source != GameSource::App {
+            game.cover_url = art::cached_path(&app, &game.name);
+        }
+    }
+
+    // Sort by a precomputed lowercase key: `sort_by` with `to_lowercase()`
+    // inside allocated two Strings per comparison (O(n log n) allocations).
+    let mut keyed: Vec<(String, Game)> = games
+        .into_iter()
+        .map(|g| (g.name.to_lowercase(), g))
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let games: Vec<Game> = keyed.into_iter().map(|(_, g)| g).collect();
+
     // Persist for instant startup next time and for the playtime watcher's index.
     write_library_cache(&app, &games);
+    // Remember what the stores looked like, so `library_changed` can answer
+    // without redoing any of this.
+    let _ = jsonstore::save(&app, FINGERPRINT_FILE, &fingerprint::compute());
+    // The watcher re-reads the index when this file changes; nudge it so a game
+    // launched right after a scan is picked up immediately.
+    playtime::wake();
     Ok(games)
 }
 
-/// Path of the on-disk snapshot of the last computed library.
-fn library_cache_path(app: &AppHandle) -> Option<std::path::PathBuf> {
-    use tauri::Manager;
-    let dir = app.path().app_data_dir().ok()?;
-    let _ = std::fs::create_dir_all(&dir);
-    Some(dir.join("library_cache.json"))
-}
+/// Name of the on-disk snapshot of the last computed library. It is a contract,
+/// not a cache: the playtime watcher reads it to know what to match processes
+/// against, and `resolve_game` resolves command ids through it.
+const LIBRARY_CACHE_FILE: &str = "library_cache.json";
+/// Fingerprint of the installed-games sources at the last successful scan.
+const FINGERPRINT_FILE: &str = "library_fingerprint.json";
 
 fn write_library_cache(app: &AppHandle, games: &[Game]) {
-    if let (Some(path), Ok(data)) = (library_cache_path(app), serde_json::to_string(games)) {
-        let _ = std::fs::write(path, data);
+    if let Err(e) = jsonstore::save(app, LIBRARY_CACHE_FILE, &games) {
+        eprintln!("[library] could not write {LIBRARY_CACHE_FILE}: {e}");
     }
+}
+
+/// The last computed library from disk (empty if never scanned or unreadable).
+fn read_library_cache(app: &AppHandle) -> Vec<Game> {
+    jsonstore::load_or_default(app, LIBRARY_CACHE_FILE)
+}
+
+/// Resolve a library entry **in Rust** from an id the frontend sent.
+///
+/// Commands take ids, never whole `Game` structs: a struct coming from the
+/// webview is attacker-controlled input that would otherwise flow straight into
+/// `ShellExecuteW`/`CreateProcess` (see `launcher.rs`). The manual store wins
+/// over the cache because it is the authoritative record for `manual:` entries.
+fn resolve_game(app: &AppHandle, id: &str) -> Option<Game> {
+    if let Ok(manual) = storage::load_manual(app) {
+        if let Some(game) = manual.into_iter().find(|g| g.id == id) {
+            return Some(game);
+        }
+    }
+    read_library_cache(app).into_iter().find(|g| g.id == id)
+}
+
+/// Folder to reveal for an entry: its install dir, or the executable parent.
+fn game_folder(game: &Game) -> Option<String> {
+    if let Some(dir) = game.install_dir.as_deref().filter(|d| !d.trim().is_empty()) {
+        return Some(dir.to_string());
+    }
+    let exe = game.executable.as_deref().filter(|e| !e.trim().is_empty())?;
+    std::path::Path::new(exe)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 /// The last computed library from disk (empty if never scanned). The frontend
 /// paints this instantly, then calls `get_library` to refresh in the background.
-#[tauri::command]
+#[tauri::command(async)]
 fn cached_library(app: AppHandle) -> Result<Vec<Game>, String> {
-    let Some(path) = library_cache_path(&app) else {
-        return Ok(Vec::new());
-    };
-    let list = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default();
-    Ok(list)
+    Ok(read_library_cache(&app))
 }
 
 /// Set a manual cover URL for a game id (empty/None clears it). Overrides always
 /// take precedence over auto-resolved artwork.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_cover(app: AppHandle, id: String, url: Option<String>) -> Result<(), String> {
     storage::set_cover_override(&app, &id, url.as_deref())
 }
 
 /// Save a dropped/picked local image as a game's cover and set it as the override.
 /// Returns the saved local path (rendered via the asset protocol).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_cover_image(
     app: AppHandle,
     id: String,
@@ -203,56 +256,75 @@ fn set_cover_image(
 
 /// Resolve a cover image for a game name via IGDB, cached on disk. The frontend
 /// calls this lazily for entries without artwork.
-#[tauri::command]
+#[tauri::command(async)]
 fn resolve_cover(app: AppHandle, name: String) -> Result<Option<String>, String> {
     Ok(art::resolve(&app, &name))
 }
 
+/// Whether anything that feeds the library has changed since the last scan.
+///
+/// The frontend calls this before its periodic refresh: when nothing moved, the
+/// whole 8-scanner + PowerShell pass is skipped. Conservative — any source it
+/// cannot read counts as changed.
+#[tauri::command(async)]
+fn library_changed(app: AppHandle) -> Result<bool, String> {
+    let current = fingerprint::compute();
+    let stored: u64 = jsonstore::load_or_default(&app, FINGERPRINT_FILE);
+    Ok(stored == 0 || stored != current)
+}
+
+/// Resolve the high-resolution cover for the detail page hero. Reuses the cached
+/// IGDB image id, so at most it downloads one image — never a new search.
+#[tauri::command(async)]
+fn resolve_cover_hires(app: AppHandle, name: String) -> Result<Option<String>, String> {
+    Ok(art::resolve_hires(&app, &name))
+}
+
 /// Wipe the cover cache (URLs + downloaded images) so everything re-resolves.
-#[tauri::command]
+#[tauri::command(async)]
 fn clear_cover_cache(app: AppHandle) -> Result<(), String> {
     art::clear_cache(&app)
 }
 
 /// Reclassify an entry as an application or a game (`"app"` / `"game"`), or clear
 /// the override (any other value) to fall back to auto-detection.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_game_type(app: AppHandle, id: String, kind: String) -> Result<(), String> {
     let k = kind.as_str();
     storage::set_type_override(&app, &id, if k == "app" || k == "game" { Some(k) } else { None })
 }
 
 /// Hide a game from the library (e.g. a non-game picked up by the registry scan).
-#[tauri::command]
+#[tauri::command(async)]
 fn hide_game(app: AppHandle, id: String) -> Result<(), String> {
     storage::set_hidden(&app, &id, true)
 }
 
 /// Unhide a game from the library.
-#[tauri::command]
+#[tauri::command(async)]
 fn unhide_game(app: AppHandle, id: String) -> Result<(), String> {
     storage::set_hidden(&app, &id, false)
 }
 
 /// Get the cached metadata of hidden games.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_hidden_library(app: AppHandle) -> Result<Vec<Game>, String> {
     storage::load_hidden_cache(&app)
 }
 
 /// Number of currently-hidden games (shown in settings so they can be restored).
-#[tauri::command]
+#[tauri::command(async)]
 fn hidden_count(app: AppHandle) -> Result<usize, String> {
     Ok(storage::load_hidden(&app).len())
 }
 
 /// Restore every hidden game.
-#[tauri::command]
+#[tauri::command(async)]
 fn restore_hidden(app: AppHandle) -> Result<(), String> {
     storage::clear_hidden(&app)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn add_manual_app(
     app: AppHandle,
     name: String,
@@ -293,7 +365,7 @@ fn add_manual_app(
 }
 
 /// Remove a manually-added app. Store-managed entries are ignored.
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_game(app: AppHandle, id: String) -> Result<(), String> {
     let mut manual = storage::load_manual(&app)?;
     let before = manual.len();
@@ -305,78 +377,154 @@ fn remove_game(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 /// Mark or unmark a game as favorite (applies to any source, not just manual).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_favorite(app: AppHandle, id: String, favorite: bool) -> Result<(), String> {
     storage::set_favorite(&app, &id, favorite)
 }
 
 /// Replace the manual category list for a game id (empty list clears it).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_categories(app: AppHandle, id: String, categories: Vec<String>) -> Result<(), String> {
     storage::set_categories(&app, &id, &categories)
 }
 
 /// Every explicitly-created category with its icon (persist even with zero games).
-#[tauri::command]
+#[tauri::command(async)]
 fn list_categories(app: AppHandle) -> Result<Vec<Category>, String> {
     Ok(storage::load_categories_meta(&app))
 }
 
 /// Create a category by name, optionally with an icon key from the bundled set.
-#[tauri::command]
+#[tauri::command(async)]
 fn add_category(app: AppHandle, name: String, icon: Option<String>) -> Result<(), String> {
     storage::add_category_name(&app, &name, icon.as_deref())
 }
 
 /// Set (or clear, with None) the icon key for an existing category.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_category_icon(app: AppHandle, name: String, icon: Option<String>) -> Result<(), String> {
     storage::set_category_icon(&app, &name, icon.as_deref())
 }
 
 /// Delete a category and strip it from every game.
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_category(app: AppHandle, name: String) -> Result<(), String> {
     storage::remove_category_name(&app, &name)
 }
 
 /// Rename a category everywhere (merges if the new name already exists).
-#[tauri::command]
+#[tauri::command(async)]
 fn rename_category(app: AppHandle, old: String, new: String) -> Result<(), String> {
     storage::rename_category_name(&app, &old, &new)
 }
 
 /// Persist the explicit category order (as shown in the sidebar).
-#[tauri::command]
+#[tauri::command(async)]
 fn set_category_order(app: AppHandle, names: Vec<String>) -> Result<(), String> {
     storage::set_category_order(&app, &names)
 }
 
 /// Accumulated play stats (seconds + last played) for a game id.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_playtime(app: AppHandle, id: String) -> Result<playtime::PlayStat, String> {
     Ok(playtime::get(&app, &id))
 }
 
 /// Play stats for every tracked game id (for sorting the library).
-#[tauri::command]
+#[tauri::command(async)]
 fn all_playtime(
     app: AppHandle,
 ) -> Result<std::collections::HashMap<String, playtime::PlayStat>, String> {
     Ok(playtime::all(&app))
 }
 
-/// Total size in bytes of a directory (for the detail page's file info).
-#[tauri::command]
-fn dir_size(path: String) -> Result<u64, String> {
-    files::dir_size(&path)
+/// Size on disk of a library entry install folder, for the detail page.
+///
+/// Takes an id, not a path: `install_dir` is read from our own library cache and
+/// validated, so the webview cannot ask for the size of an arbitrary directory.
+/// `None` = the entry has no known folder.
+#[tauri::command(async)]
+fn game_dir_size(app: AppHandle, id: String) -> Result<Option<u64>, String> {
+    let Some(game) = resolve_game(&app, &id) else {
+        return Err(format!("Entrada desconocida: {id}"));
+    };
+    let Some(folder) = game_folder(&game) else {
+        return Ok(None);
+    };
+    let dir = files::validate_dir(&folder)?;
+    Ok(Some(files::dir_size(&dir)))
 }
 
 /// Extract the real icon embedded in an app's executable (cached PNG path), used
 /// as the icon for apps without a cover or known brand logo.
-#[tauri::command]
+#[tauri::command(async)]
 fn app_icon(app: AppHandle, path: String) -> Result<Option<String>, String> {
     Ok(appicons::extract(&app, &path))
+}
+
+/// Seconds the main window must stay hidden before we ask WebView2 to trim its
+/// memory. Short enough to matter when Meteor lives in the tray, long enough not
+/// to fire on a hide/show bounce.
+#[cfg(windows)]
+const WEBVIEW_TRIM_DELAY_SECS: u64 = 10;
+
+/// Ask WebView2 to drop what it can (`LOW`) or go back to normal.
+///
+/// Closing the window only hides it — the whole Chromium process tree stays
+/// resident so the playtime/Discord watchers keep running. `LOW` lets the engine
+/// release caches and decoded images while nobody is looking, and unlike
+/// `TrySuspend` it has no lifecycle semantics that could break the page state.
+#[cfg(windows)]
+fn set_webview_memory_low(app: &AppHandle, low: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use tauri::webview::PlatformWebview;
+    use windows::core::Interface;
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.with_webview(move |webview: PlatformWebview| {
+        // SAFETY: runs on the UI thread that owns the controller (Tauri
+        // guarantees this for `with_webview`), and only reads/sets a setting.
+        unsafe {
+            let Ok(core) = webview.controller().CoreWebView2() else {
+                return;
+            };
+            // ICoreWebView2_19 needs a recent runtime; older ones just skip it.
+            let Ok(api) = core.cast::<ICoreWebView2_19>() else {
+                return;
+            };
+            let _ = api.SetMemoryUsageTargetLevel(if low {
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+            } else {
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+            });
+        }
+    });
+}
+
+/// Tell the frontend whether its window is visible.
+///
+/// The webview keeps running while hidden to the tray, and `document.hidden` is
+/// not reliable when only the HWND is hidden, so visibility is published from
+/// here: the library hook uses it to stop its periodic rescan while nobody can
+/// see the result.
+fn emit_visibility(app: &AppHandle, visible: bool) {
+    let _ = app.emit("window-visibility", visible);
+}
+
+/// Reveal the main window once the frontend has painted.
+///
+/// The window is created with `"visible": false` so the user never sees an empty
+/// white rectangle while the webview boots (it is also `maximized` + `center`,
+/// which made that flash very visible).
+// NOT `async`: shows a window, which belongs on the main thread.
+#[tauri::command]
+fn show_main_window(app: AppHandle) {
+    show_main(&app);
 }
 
 /// Bring the main window to the front (used by the tray and Spotlight).
@@ -385,6 +533,9 @@ fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        #[cfg(windows)]
+        set_webview_memory_low(app, false);
+        emit_visibility(app, true);
     }
 }
 
@@ -392,7 +543,7 @@ fn show_main(app: &AppHandle) {
 /// clave `Run` del plugin (arranque normal) como la **tarea programada** elevada
 /// (`MeteorAutostart`), que usamos cuando Meteor corre como administrador porque
 /// la clave Run no puede lanzar apps que requieren UAC (las bloquea en silencio).
-#[tauri::command]
+#[tauri::command(async)]
 fn get_autostart(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     #[cfg(windows)]
@@ -406,7 +557,7 @@ fn get_autostart(app: AppHandle) -> Result<bool, String> {
         .map_err(|e| format!("Failed to read autostart: {e}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let auto = app.autolaunch();
@@ -454,7 +605,7 @@ fn get_app_settings(state: tauri::State<'_, std::sync::Mutex<AppSettings>>) -> R
     Ok(state.lock().unwrap().clone())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn system_info() -> Result<system::SystemInfo, String> {
     Ok(system::collect())
 }
@@ -462,7 +613,7 @@ fn system_info() -> Result<system::SystemInfo, String> {
 /// Overlay MPO diagnostics: live composition health + the system-config levers
 /// (monitor count, mixed refresh, HAGS) that decide whether the HUD can run on a
 /// hardware overlay plane (free) or gets composited by DWM (costing the game's FPS).
-#[tauri::command]
+#[tauri::command(async)]
 fn overlay_mpo_diagnostics() -> system::MpoDiagnostics {
     system::mpo_diagnostics()
 }
@@ -518,7 +669,7 @@ fn restart_as_admin(app: AppHandle) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_app_settings(
     app: AppHandle,
     state: tauri::State<'_, std::sync::Mutex<AppSettings>>,
@@ -527,7 +678,12 @@ fn set_app_settings(
     storage::save_settings(&app, &settings);
     *state.lock().unwrap() = settings.clone();
     apply_overlay_settings(&app, &settings);
-    register_shortcuts(&app, &settings.shortcuts);
+    // This command now runs on the async pool (it writes to disk), but the
+    // global-shortcut registration is a window-manager operation: keep it on the
+    // main thread.
+    let handle = app.clone();
+    let shortcuts = settings.shortcuts.clone();
+    let _ = app.run_on_main_thread(move || register_shortcuts(&handle, &shortcuts));
     let _ = app.emit("settings-updated", ());
     Ok(())
 }
@@ -664,6 +820,8 @@ fn toggle_overlay_settings(app: &AppHandle) {
 /// overlay WebView (covering the monitor, taking input) and the native HUD hides (the
 /// sampler gates on `set_settings_open`). On close it **destroys** the window, freeing
 /// the WebView2 processes — zero Chromium overhead during gameplay.
+// NOT `async`: creates/destroys a WebviewWindow and moves focus, which belongs
+// on the main thread. It does no I/O.
 #[tauri::command]
 fn set_overlay_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
     metrics::set_settings_open(interactive);
@@ -686,33 +844,66 @@ fn set_overlay_interactive(app: AppHandle, interactive: bool) -> Result<(), Stri
     Ok(())
 }
 /// The saved Discord Rich Presence client id (empty = disabled).
-#[tauri::command]
+#[tauri::command(async)]
 fn get_discord_client_id(app: AppHandle) -> Result<String, String> {
     Ok(storage::load_discord_client_id(&app))
 }
 
 /// Save the Discord client id and apply it live to the presence watcher.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_discord_client_id(app: AppHandle, id: String) -> Result<(), String> {
     storage::save_discord_client_id(&app, &id)?;
     discord::set_client_id(&id);
     Ok(())
 }
 
-/// Open a folder in the OS file manager.
-#[tauri::command]
-fn open_path(path: String) -> Result<(), String> {
-    files::open_path(&path)
+/// Reveal a library entry folder in the OS file manager.
+///
+/// Id-based for the same reason as `game_dir_size`: the old `open_path(path)`
+/// handed an arbitrary webview-supplied string to Explorer.
+#[tauri::command(async)]
+fn open_game_folder(app: AppHandle, id: String) -> Result<(), String> {
+    let Some(game) = resolve_game(&app, &id) else {
+        return Err(format!("Entrada desconocida: {id}"));
+    };
+    let folder = game_folder(&game).ok_or_else(|| "La entrada no tiene carpeta".to_string())?;
+    let dir = files::validate_dir(&folder)?;
+    files::open_folder(&dir)
+}
+
+/// Open one of the detail page's community links in the user's browser.
+///
+/// Validated against a host allowlist in Rust: a bare `<a href>` in the webview
+/// navigates the app window itself, and the target host must not be whatever a
+/// library entry happens to contain.
+#[tauri::command(async)]
+fn open_external(url: String) -> Result<(), String> {
+    files::open_external(&url)
 }
 
 /// The user's own screenshots for a game (Steam + Windows Game Bar).
-#[tauri::command]
-fn user_screenshots(app: AppHandle, game: Game) -> Result<Vec<String>, String> {
+#[tauri::command(async)]
+fn user_screenshots(app: AppHandle, id: String) -> Result<Vec<String>, String> {
+    let Some(game) = resolve_game(&app, &id) else {
+        return Err(format!("Entrada desconocida: {id}"));
+    };
     Ok(screenshots::user_screenshots(&app, &game))
 }
 
+/// Launch a library entry by id.
+///
+/// The entry is re-resolved from the manual store / library cache here, so the
+/// executable and protocol URI that reach `launcher.rs` are always ones a
+/// scanner produced -- never a struct the webview built.
+// NOT `async`: `ShellExecuteW` may hand the launch to a Shell extension, and
+// those can require a COM single-threaded apartment. The main thread already has
+// one (the webview runtime initializes it); Tauri's blocking pool does not. The
+// work here is a canonicalize plus a process spawn, i.e. milliseconds.
 #[tauri::command]
-fn launch_game(game: Game) -> Result<(), String> {
+fn launch_game(app: AppHandle, id: String) -> Result<(), String> {
+    let Some(game) = resolve_game(&app, &id) else {
+        return Err(format!("Entrada desconocida: {id}"));
+    };
     launcher::launch(&game)
     // Playtime is accumulated by the global watcher (see `playtime::start`),
     // which times any library game regardless of how it was launched.
@@ -746,6 +937,27 @@ pub fn run() {
                     if minimize {
                         api.prevent_close();
                         let _ = window.hide();
+                        let app = window.app_handle().clone();
+                        emit_visibility(&app, false);
+                        // Trim WebView2's memory once it has been hidden for a
+                        // while, and only if it is still hidden by then.
+                        #[cfg(windows)]
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(
+                                WEBVIEW_TRIM_DELAY_SECS,
+                            ));
+                            let hidden = app
+                                .get_webview_window("main")
+                                .and_then(|w| w.is_visible().ok())
+                                .map(|visible| !visible)
+                                .unwrap_or(false);
+                            if hidden {
+                                let handle = app.clone();
+                                let _ = app.run_on_main_thread(move || {
+                                    set_webview_memory_low(&handle, true);
+                                });
+                            }
+                        });
                     } else {
                         // Let it close, which exits the app.
                     }
@@ -813,13 +1025,34 @@ pub fn run() {
             #[cfg(windows)]
             {
                 use tauri_plugin_autostart::ManagerExt;
-                if elevation::is_elevated() && !elevation::logon_task_exists() {
-                    if app.autolaunch().is_enabled().unwrap_or(false) {
-                        if elevation::create_logon_task().is_ok() {
-                            let _ = app.autolaunch().disable();
-                        }
+                // Security migration: a `/RL HIGHEST` logon task pointing at an
+                // executable in a user-writable folder is a privilege-escalation
+                // primitive. Drop it and fall back to the ordinary Run key.
+                if elevation::exe_in_user_writable_location() && elevation::logon_task_exists() {
+                    let removed = elevation::delete_logon_task().is_ok();
+                    if removed && !app.autolaunch().is_enabled().unwrap_or(false) {
+                        let _ = app.autolaunch().enable();
                     }
+                } else if elevation::is_elevated()
+                    && !elevation::logon_task_exists()
+                    && app.autolaunch().is_enabled().unwrap_or(false)
+                    && elevation::create_logon_task().is_ok()
+                {
+                    // Elevated *and* installed outside a user-writable folder:
+                    // the Run key cannot launch an elevated app, the task can.
+                    let _ = app.autolaunch().disable();
                 }
+            }
+
+            // One-off cache maintenance, off the main thread: rename cover files
+            // from the old unstable hash to FNV-1a, then keep `covers/` under its
+            // size cap (it had none before, so it grew forever).
+            {
+                let maintenance = handle.clone();
+                std::thread::spawn(move || {
+                    crate::art::migrate_filenames(&maintenance);
+                    crate::art::prune_covers(&maintenance);
+                });
             }
 
             // Close any play sessions left dangling by a previous crash/force-quit,
@@ -847,8 +1080,13 @@ pub fn run() {
                 let show = MenuItem::with_id(app, "show", "Mostrar Meteor", true, None::<&str>)?;
                 let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
                 let menu = Menu::with_items(app, &[&show, &quit])?;
-                let _tray = TrayIconBuilder::with_id("main")
-                    .icon(app.default_window_icon().unwrap().clone())
+                // No `unwrap()`: a missing icon must not take the whole app down
+                // at startup — the tray just shows the default one.
+                let mut tray = TrayIconBuilder::with_id("main");
+                if let Some(icon) = app.default_window_icon() {
+                    tray = tray.icon(icon.clone());
+                }
+                let _tray = tray
                     .tooltip("Meteor")
                     .menu(&menu)
                     .show_menu_on_left_click(false)
@@ -874,6 +1112,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_library,
             resolve_cover,
+            resolve_cover_hires,
+            library_changed,
             set_cover,
             set_cover_image,
             clear_cover_cache,
@@ -896,7 +1136,7 @@ pub fn run() {
             get_playtime,
             all_playtime,
             cached_library,
-            dir_size,
+            game_dir_size,
             app_icon,
             get_discord_client_id,
             set_discord_client_id,
@@ -909,17 +1149,24 @@ pub fn run() {
             username,
             is_elevated,
             restart_as_admin,
-            open_path,
+            open_game_folder,
+            open_external,
             user_screenshots,
             launch_game,
-            set_overlay_interactive
+            set_overlay_interactive,
+            show_main_window
         ])
         .build(tauri::generate_context!())
         .expect("error al iniciar la aplicación Tauri")
-        .run(|_app_handle, event| {
+        .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
-                crate::presentmon::cleanup();
-                crate::cputemp::cleanup();
+                // The URL cache is written at most every 2 s during a cover pass;
+                // make sure the last entries are not lost on a clean exit.
+                crate::art::flush(app_handle);
             }
+            // Sidecar cleanup is handled by the kill-on-close Job Object
+            // (`jobobj.rs`): the kernel terminates PresentMon/cputemp when our
+            // process goes away, including on a crash or force-quit, which the
+            // old `taskkill /F /PID` on RunEvent::Exit could not.
         });
 }

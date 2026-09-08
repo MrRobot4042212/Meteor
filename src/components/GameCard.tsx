@@ -128,6 +128,9 @@ export const GameCard = memo(function GameCard({
     onDragStateChange?.(true);
   }
 
+  // Mount-on-hover for the tool chrome (see the render below).
+  const [hovered, setHovered] = useState(false);
+
   function handleDragEnd() {
     // Reset transform to identity on drag end.
     if (ref.current) {
@@ -141,7 +144,13 @@ export const GameCard = memo(function GameCard({
   return (
     <div
       className="animate-card-in"
-      style={{ animationDelay: `${Math.min(index, 24) * 30}ms` }}
+      style={{
+        animationDelay: `${Math.min(index, 24) * 30}ms`,
+        // Skip layout/paint for cards outside the viewport; the intrinsic size
+        // keeps the scrollbar honest (cards are a 2/3 box at ~240px wide).
+        contentVisibility: 'auto',
+        containIntrinsicSize: '360px',
+      }}
     >
     <div
       ref={ref}
@@ -166,7 +175,8 @@ export const GameCard = memo(function GameCard({
         e.preventDefault();
         onContextMenu(game, e.clientX, e.clientY);
       }}
-      className={`group relative aspect-[2/3] overflow-hidden border bg-elevated shadow-card will-change-transform hover:shadow-glow ${
+      onMouseEnter={() => setHovered(true)}
+      className={`group relative aspect-[2/3] overflow-hidden border bg-elevated shadow-card hover:shadow-glow ${
         selectionMode ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'
       } ${
         selected
@@ -179,7 +189,7 @@ export const GameCard = memo(function GameCard({
       {/* Selection checkbox (only in selection mode) */}
       {selectionMode && (
         <div
-          className={`pointer-events-none absolute left-2 top-2 z-20 grid h-6 w-6 place-items-center rounded-md border-2 transition ${
+          className={`pointer-events-none absolute left-2 top-2 z-20 grid h-6 w-6 place-items-center border-2 transition ${
             selected ? 'border-accent bg-accent text-white' : 'border-white/70 bg-void/50'
           }`}
         >
@@ -255,8 +265,10 @@ export const GameCard = memo(function GameCard({
         </div>
       </div>
 
-      {/* Favorite star: persistent (gold) when favorited, else shown on hover */}
-      {onToggleFavorite && !selectionMode && (
+      {/* Favorite star: persistent (gold) when favorited, else shown on hover.
+          Mounted only when favorited or once hovered — each of these carries a
+          backdrop-filter, i.e. its own compositor layer. */}
+      {onToggleFavorite && !selectionMode && (game.favorite || hovered) && (
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -273,7 +285,8 @@ export const GameCard = memo(function GameCard({
         </button>
       )}
 
-      {/* Top-right tools (hidden in selection mode) */}
+      {/* Top-right tools (hidden in selection mode, mounted on first hover) */}
+      {hovered && !selectionMode && (
       <div
         className={`pointer-events-none absolute right-2 top-2 flex gap-1.5 opacity-0 transition ${
           selectionMode ? 'hidden' : 'group-hover:opacity-100'
@@ -328,6 +341,7 @@ export const GameCard = memo(function GameCard({
           </button>
         )}
       </div>
+      )}
 
       {/* Source dot */}
       <span
@@ -337,7 +351,7 @@ export const GameCard = memo(function GameCard({
 
       {/* Animated glow border on hover (spins only while hovered). Hidden in
           selection mode, where the accent selection ring takes over. */}
-      {!selectionMode && <div className="card-beam" aria-hidden />}
+      {!selectionMode && hovered && <div className="card-beam" aria-hidden />}
     </div>
     </div>
   );

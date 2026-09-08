@@ -12,7 +12,6 @@
 //! cross threads), so all state is a `thread_local`. If any init step fails the facade
 //! (`overlay`) falls back to the GDI window, so nothing breaks on odd drivers.
 
-#![cfg(windows)]
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -52,7 +51,8 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassExW, SetWindowPos,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, PeekMessageW,
+    RegisterClassExW, SetWindowPos,
     ShowWindow, TranslateMessage, HWND_NOTOPMOST, HWND_TOPMOST, MSG, PM_REMOVE, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSEXW, WS_EX_NOACTIVATE,
     WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
@@ -78,6 +78,21 @@ struct Dcomp {
     last_y: i32,
     visible: bool,
     last_sig: u64,
+}
+
+impl Drop for Dcomp {
+    fn drop(&mut self) {
+        // The COM interfaces release themselves in field order; the window is
+        // ours to destroy. Without this, `hide()` (SW_HIDE) left the HWND, the
+        // D3D11 device, the swapchain and the D2D/DWrite objects resident for
+        // the rest of the session after a single game.
+        if !self.hwnd.is_invalid() {
+            // SAFETY: the window was created on this thread and is not in use.
+            unsafe {
+                let _ = DestroyWindow(self.hwnd);
+            }
+        }
+    }
 }
 
 thread_local! {
@@ -182,7 +197,7 @@ unsafe fn init() -> Result<Dcomp> {
             None,
         )
     );
-    let d3d = d3d.ok_or_else(|| windows::core::Error::from_win32())?;
+    let d3d = d3d.ok_or_else(windows::core::Error::from_win32)?;
     let dxgi_device: IDXGIDevice = step!("d3d.cast::<IDXGIDevice>", d3d.cast());
 
     // DirectComposition device + target for our window + a root visual.
@@ -555,6 +570,18 @@ pub fn hide() {
                 d.last_sig = 0;
             }
         }
+    });
+}
+
+/// Drop the whole DirectComposition stack (window included).
+///
+/// Called by the sampler after a stretch with no game: keeping a D3D11 device
+/// and a flip swapchain alive to draw nothing costs GPU and system memory. The
+/// window class stays registered, so a later `try_init` just recreates the
+/// window.
+pub fn teardown() {
+    STATE.with(|s| {
+        s.borrow_mut().take();
     });
 }
 

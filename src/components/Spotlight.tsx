@@ -28,6 +28,9 @@ export function Spotlight({
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
+  // Debounced like the library grid: scoring + sorting the whole library on
+  // every keystroke is the one thing that makes this palette feel slow.
+  const [debounced, setDebounced] = useState('');
   const [idx, setIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -35,8 +38,13 @@ export function Spotlight({
     inputRef.current?.focus();
   }, []);
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query), 100);
+    return () => clearTimeout(t);
+  }, [query]);
+
   const results = useMemo(() => {
-    const q = query.trim();
+    const q = debounced.trim();
     if (!q) {
       // No query: surface favorites first, then alphabetical, as a starting set.
       return [...games]
@@ -52,7 +60,7 @@ export function Spotlight({
       .sort((a, b) => b.s - a.s)
       .slice(0, MAX_RESULTS)
       .map((x) => x.g);
-  }, [games, query]);
+  }, [games, debounced]);
 
   // Keep the selection index within the current result set.
   useEffect(() => {

@@ -10,7 +10,151 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
 
 ## [No publicado] — Trabajo en curso
 
+### Rendimiento
+- **Meteor en la bandeja ya no hace prácticamente nada** (`playtime.rs`,
+  `metrics.rs`, `cputemp.rs`, `presentmon.rs`): los cuatro hilos que despertaban
+  por temporizador ahora **se aparcan** hasta que hay algo que hacer. El watcher
+  de tiempo de juego bloquea en un `Condvar` (lo despierta el lanzamiento de un
+  juego) en vez de enumerar **todos los procesos del sistema cada 5 s** para
+  descartarlos; el sampler del overlay usa `MsgWaitForMultipleObjectsEx` con
+  espera infinita mientras el overlay está apagado o no hay juego; el
+  controlador de `cputemp` sale de inmediato si no hay permisos de administrador
+  (como ya hacía PresentMon) y también se aparca.
+- **Cero escrituras en disco en reposo**: `active_sessions.json` se escribía cada
+  5 segundos (≈17 000 veces al día) con el mismo `[]`. Ahora solo se escribe si
+  el contenido cambia, igual que `hidden_cache.json` y los ajustes (que se
+  guardaban en cada pulsación del atajo del overlay).
+- **NVML y ADLX se cargan solo cuando hacen falta** (`metrics.rs`): antes se
+  cargaban `nvml.dll` y `amdadlx64.dll` al arrancar aunque el overlay estuviese
+  desactivado. Ahora se inicializan en el primer dibujado y se liberan tras 60 s
+  sin juego, junto con **toda la pila DirectComposition del HUD** (ventana,
+  dispositivo D3D11, swapchain), que antes quedaba residente el resto de la
+  sesión (`overlay_dcomp.rs`: nuevo `Drop` + `teardown`).
+- **WebView2 libera memoria al minimizar a la bandeja** (`lib.rs`): 10 s después
+  de ocultar la ventana se le pide `SetMemoryUsageTargetLevel(LOW)`, y se
+  restaura al mostrarla.
+- **El rescaneo periódico deja de trabajar a ciegas** (`fingerprint.rs`,
+  `useLibrary.ts`): antes lanzaba 8 escáneres + un proceso de PowerShell cada 15
+  minutos aunque la ventana estuviese oculta. Ahora el temporizador se pausa
+  mientras la ventana no se ve (evento `window-visibility` desde Rust) y, antes
+  de escanear, un nuevo comando `library_changed` comprueba por marcas de tiempo
+  de carpetas y claves del registro si hay algo nuevo.
+- **El HUD ya no salta al hilo principal en cada fotograma** (`metrics.rs`): la
+  geometría del monitor se lee con `MonitorFromWindow` + `GetDpiForMonitor` en el
+  propio hilo del sampler. De paso, el HUD se coloca en el monitor del juego en
+  vez de siempre en el principal.
+- **Comandos con E/S fuera del hilo principal**: 35 comandos pasan a
+  `#[tauri::command(async)]`. Un escaneo de biblioteca ya no congela IPC, la
+  bandeja, los atajos globales ni el sampler del HUD.
+- **La caché de portadas deja de reescribirse entera por cada portada**
+  (`art.rs`): `RwLock` sin clonar el mapa, guardado agrupado (máx. 1 escritura
+  cada 2 s) y **límite de 200 MB** con purga por uso; antes crecía sin tope.
+- **Portadas del tamaño correcto**: la rejilla usa `t_cover_big` (264×374, lo que
+  cabe en una tarjeta de 240 px) y la ficha pide `t_cover_big_2x` solo para su
+  cabecera. Antes todo eran imágenes 528×748, ~4× los bytes descodificados.
+- **La rejilla vuelve a memoizar** (`page.tsx`, `GameCard.tsx`): los manejadores
+  pasan por `useCallback`, así que cambiar un estado cualquiera de `MainApp` ya
+  no re-renderiza todas las tarjetas. Además las tarjetas dejan de tener
+  `will-change: transform` permanente, montan los botones con desenfoque y el
+  borde animado **solo al pasar el ratón**, y usan `content-visibility: auto`.
+- **Las portadas se aplican por lotes** (`useLibrary.ts`): un `setState` cada
+  120 ms en vez de dos por portada resuelta, y el merge del refresco pasa de
+  O(n²) a un `Map`.
+- **`get_library` rellena las portadas ya descargadas**, así que un refresco no
+  vuelve a pedirlas una por una por IPC; y ordena con clave precalculada en vez
+  de dos `to_lowercase()` por comparación.
+- **Arranque más corto**: la ventana se crea oculta y se muestra tras el primer
+  pintado (sin destello blanco), el idioma ya no bloquea el primer render, la
+  intro pasa de 2 s a 0,85 s, y los diálogos, el tour y la ficha se cargan bajo
+  demanda (`next/dynamic`).
+- **Discord con reintentos escalonados** (5 s → 5 min) y un aviso único, en vez
+  de abrir una tubería cada 5 segundos indefinidamente con Discord cerrado.
+- **Sidecar de temperatura: 69,3 MB → 12,9 MB** (`cputemp.csproj`), comprimido y
+  con recorte parcial; LibreHardwareMonitor y sus dependencias reflexivas quedan
+  intactas.
+
+### Seguridad
+- **Credenciales de IGDB fuera del binario** (`igdb.rs`): el cliente/secreto de
+  Twitch ya no está incrustado como constante de reserva; se leen **solo** de
+  `IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET` en tiempo de compilación (secretos de
+  CI o un `.env` local; ver `.env.example`). Un binario compilado sin ellas
+  simplemente no resuelve portadas de IGDB (avisa una vez) en lugar de repartir
+  la misma credencial a todos los usuarios. **Rota el secreto anterior en
+  dev.twitch.tv: estuvo publicado en el repositorio.**
+- **Lanzamiento de juegos sin `cmd`** (`launcher.rs`, `lib.rs`): se elimina
+  `cmd /C start "" <uri>` —que entregaba la URI al intérprete de comandos— y se
+  sustituye por `ShellExecuteW` con **lista blanca de esquemas** (`steam`,
+  `com.epicgames.launcher`, `uplay`, `battlenet`, y `shell:appsFolder\` para
+  Xbox). Los ejecutables se validan (`canonicalize`, extensión permitida y,
+  cuando la entrada tiene `install_dir`, obligados a estar dentro de él).
+- **Los comandos reciben ids, no structs** (`lib.rs`, `src/lib/tauri.ts`):
+  `launch_game`, `user_screenshots`, `game_dir_size` (antes `dir_size`) y
+  `open_game_folder` (antes `open_path`) resuelven la entrada en Rust desde la
+  caché de biblioteca o la tienda manual. La webview ya no puede fabricar rutas
+  ni URIs de lanzamiento, ni pedir el tamaño o abrir una carpeta arbitraria.
+- **Sidecars en un Job Object** (`jobobj.rs`, `presentmon.rs`, `cputemp.rs`):
+  `PresentMon.exe` y `cputemp.exe` (elevados, con sesión ETW y driver de kernel)
+  se asignan a un Job con `KILL_ON_JOB_CLOSE`, así que el kernel los termina si
+  Meteor muere de cualquier forma. Sustituye al `taskkill /F /PID` guardado en
+  un atómico, que perdía la carrera con la reutilización de PID y no se
+  ejecutaba en caso de cierre forzado o `panic = "abort"`.
+- **Sin administrador permanente** (`hooks.nsi`, `elevation.rs`, `lib.rs`): el
+  instalador ya no ofrece marcar `RUNASADMIN` (lo elimina si lo puso una versión
+  anterior) y la tarea de inicio `/RL HIGHEST` no se crea si el ejecutable está
+  en una carpeta escribible por el usuario; en ese caso se migra a la clave
+  `Run` normal. Un lanzador siempre elevado pasaba su token a **cada juego**.
+- **CSP real y capacidades por ventana** (`tauri.conf.json`, `capabilities/`):
+  se sustituye `"csp": null` por una política explícita (con `devCsp` relajada
+  solo para el servidor de desarrollo) y `default.json` se divide en
+  `main.json` y `overlay.json`; la ventana de overlay se queda con
+  `core:default` únicamente.
+- **Rutas de sistema absolutas y validación de carpetas** (`files.rs`,
+  `xbox.rs`, `elevation.rs`): `explorer.exe`, `schtasks.exe` y `powershell.exe`
+  se resuelven desde `%SystemRoot%` y nunca por `PATH` (el proceso puede estar
+  elevado); `dir_size` limita profundidad y número de entradas, y la
+  enumeración AppX de Xbox tiene un **timeout de 10 s** con caída al escaneo de
+  carpetas.
+- **PresentMon verificado por SHA-256** (`scripts/fetch-binaries.ps1`,
+  `release.yml`) y **NuGet bloqueado** (`packages.lock.json`) para el sidecar,
+  que carga un driver de kernel.
+- **`parse_rgb` deja de poder abortar el proceso** (`overlay.rs`): un color no
+  ASCII en los ajustes rompía el troceado por bytes.
+
 ### Añadido
+- **Persistencia atómica y a prueba de corrupción** (`jsonstore.rs`): todos los
+  ficheros de datos se escriben en `<archivo>.tmp` y se renombran (una operación
+  atómica), y al leerlos se distingue *no existe* de *corrupto*. Un JSON corrupto
+  se **aparta** como `<archivo>.corrupt-<ts>` en vez de convertirse en valores por
+  defecto que la siguiente escritura consolidaba: eso perdía silenciosamente
+  favoritos, categorías o apps añadidas a mano.
+- **Nombres de caché estables** (`art.rs`): las imágenes se nombraban con
+  `DefaultHasher`, que Rust no garantiza estable entre versiones — al actualizar
+  el toolchain se invalidaba toda la caché y los ficheros viejos quedaban ahí
+  para siempre. Ahora es FNV-1a, con migración automática por renombrado (las
+  portadas propias del usuario se migran leyendo `cover_overrides.json`).
+- **Historial de sesiones acotado** a 500 por juego (`playtime.rs`), plegando el
+  resto en el total; `playtime.json` se reescribe entero en cada sesión.
+- **Medición de rendimiento** (`docs/perf/capture.ps1`, `perf.rs`): captura CPU,
+  despertares, memoria, escrituras a disco y tamaño de cachés en reposo, y
+  compara con una captura anterior. `METEOR_PERF=1` añade tiempos de
+  `get_library`, `xbox::scan` y `art::resolve`.
+- **Linter y pruebas de verdad**: `npm run lint` vuelve a existir (ESLint 9 con
+  `react-hooks/exhaustive-deps` como error — la regla que detecta justo el fallo
+  de memoización de la rejilla), Vitest para la búsqueda difusa y la paridad de
+  catálogos es/en, y `npm run check` ejecuta todas las puertas de calidad de una
+  vez.
+- **Enlaces externos seguros** (`files.rs`): los enlaces de comunidad de la ficha
+  abrían el navegador *dentro* de la propia ventana de la app; ahora pasan por un
+  comando de Rust con lista blanca de dominios.
+- **CI en cada push y pull request** (`.github/workflows/ci.yml`): typecheck,
+  `next build`, `cargo clippy -D warnings` y `cargo test` en `windows-latest`.
+  `release.yml` la reutiliza (`workflow_call`) y depende de ella, así que un tag
+  ya no puede publicar algo que no pasaría CI. Todas las acciones fijadas por
+  SHA. Nuevo `scripts/fetch-binaries.ps1`: deja `PresentMon.exe` (verificado) y
+  `cputemp.exe` en `src-tauri/binaries/`, así un clon limpio puede compilar.
+- **Primeras pruebas del repositorio** (`cargo test`): lista blanca de URIs y
+  validación de rutas de `launcher.rs`, helpers de `files.rs` y regresión de
+  `overlay::parse_rgb`.
 - **Overlay adaptativo: detecta si cuesta FPS y reacciona (MPO)** (`metrics.rs`,
   `overlay_dcomp.rs`, `system.rs`, `OverlayMpoPanel.tsx`): un overlay sin inyección solo
   es **gratis** si Windows le concede un **plano hardware (MPO)**; en multimonitor o con
@@ -71,6 +215,12 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
     re-pide al cambiarlo. La caché v1 (español horneado) se descarta. **i18n 100%.**
 
 ### Cambiado
+- **Los juegos lanzados fuera de Meteor ya no se cronometran.** El watcher solo
+  sigue a los que arrancan desde la app (era ya el comportamiento efectivo: el
+  emparejamiento estaba limitado a esos), y a cambio en reposo no despierta ni
+  enumera procesos. Documentado como decisión en `CLAUDE.md` §4.
+- **Búsqueda: a igualdad de coincidencia gana el título más corto**
+  (`fuzzy.ts`), así "portal" ordena *Portal* antes que *Portal Knights*.
 - **Métricas más ligeras durante el juego (menos CPU en segundo plano)**: tres recortes
   quirúrgicos al subsistema de telemetría sin cambiar la arquitectura (sigue sin inyección de
   DLL, HUD nativo MPO-friendly, muestreo *gated*):

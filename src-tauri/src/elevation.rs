@@ -3,7 +3,6 @@
 //! so the UI offers a "Restart as admin" action that relaunches via the `runas`
 //! verb (UAC prompt); the old instance then exits.
 
-#![cfg(windows)]
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
@@ -60,6 +59,29 @@ pub fn relaunch_elevated() -> Result<(), String> {
     }
 }
 
+/// Whether our own executable sits in a location the current user can write to
+/// (the default Tauri/NSIS per-user install goes to `%LOCALAPPDATA%`).
+///
+/// This gates the elevated logon task: a `/RL HIGHEST` scheduled task pointing at
+/// a user-writable path is a local privilege-escalation primitive — anything able
+/// to replace that file gets silent SYSTEM-adjacent execution at every logon,
+/// with no UAC prompt. When it is user-writable we refuse to create the task and
+/// fall back to the ordinary (non-elevated) `Run` key.
+pub fn exe_in_user_writable_location() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        // Unknown location: assume the unsafe case.
+        return true;
+    };
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let user_roots = ["USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "PUBLIC"];
+    user_roots.iter().any(|var| {
+        std::env::var(var)
+            .ok()
+            .and_then(|dir| std::fs::canonicalize(dir).ok())
+            .is_some_and(|root| exe.starts_with(&root))
+    })
+}
+
 /// Name of the Task Scheduler entry used to autostart Meteor elevated.
 const AUTOSTART_TASK: &str = "MeteorAutostart";
 
@@ -69,7 +91,7 @@ fn schtasks(args: &[&str]) -> std::io::Result<bool> {
     use std::os::windows::process::CommandExt;
     // CREATE_NO_WINDOW so the console of schtasks.exe never flashes.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let status = std::process::Command::new("schtasks")
+    let status = std::process::Command::new(crate::files::system_exe("schtasks.exe"))
         .args(args)
         .creation_flags(CREATE_NO_WINDOW)
         .stdout(std::process::Stdio::null())
@@ -87,8 +109,16 @@ pub fn logon_task_exists() -> bool {
 /// with highest privileges. This is the only way Windows will autostart an app
 /// that requires elevation (UAC) without a prompt at every login — a plain
 /// `HKCU\...\Run` entry is silently blocked for elevated apps. Requires the
-/// current process to be elevated (creating a `/RL HIGHEST` task needs admin).
+/// current process to be elevated (creating a `/RL HIGHEST` task needs admin)
+/// **and** the executable to live outside a user-writable directory — see
+/// `exe_in_user_writable_location`.
 pub fn create_logon_task() -> Result<(), String> {
+    if exe_in_user_writable_location() {
+        return Err(
+            "No se crea la tarea de inicio elevada: el ejecutable está en una carpeta escribible por el usuario."
+                .into(),
+        );
+    }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     // schtasks parses its own /TR value, so wrap the path in quotes for spaces.
     let tr = format!("\"{}\"", exe.display());

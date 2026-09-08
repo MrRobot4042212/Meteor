@@ -19,7 +19,7 @@ import {
 import type { OverlaySettings, OverlayPosition, SystemInfo, MetricsSample, ShortcutsSettings } from '@/lib/types';
 import { CloseIcon, InfoIcon, GearIcon, FireIcon } from './icons';
 import { formatShortcut } from '@/lib/shortcuts';
-import { OverlayPanel, OVERLAY_CORNER } from './Overlay';
+import { OverlayPanel } from './Overlay';
 import { OverlayMpoPanel } from './OverlayMpoPanel';
 
 /** Sample telemetry data used by the live overlay preview inside the settings panel. */
@@ -642,10 +642,6 @@ function AppTab({
   tray,
   shortcuts,
   updateShortcuts,
-  discordId,
-  discordSaved,
-  setDiscordId,
-  saveDiscord,
   clear,
   restore,
   toggleAutostart,

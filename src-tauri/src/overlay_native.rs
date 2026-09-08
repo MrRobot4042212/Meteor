@@ -8,7 +8,6 @@
 //! rather than falling back to GDI. Only the foreground helpers below survive, used by
 //! the facade to gate drawing on the game actually being focused.
 
-#![cfg(windows)]
 
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 

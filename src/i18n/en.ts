@@ -347,6 +347,7 @@ export const en = {
     promoMedia: 'Promotional Media',
     myScreenshots: 'My screenshots',
     noScreenshots: 'No screenshots of your own for this game. We look in Steam screenshots (F12) and the Windows Game Bar gallery (Win+Alt+PrtScn).',
+    showAllScreenshots: 'Show all {{count}} screenshots',
     videosTrailers: 'Videos and Trailers',
     trailer: 'Trailer',
     playTrailer: 'Play trailer',

@@ -1,0 +1,68 @@
+# Contribuir a Meteor
+
+Meteor es una app de escritorio **solo para Windows**: Tauri 2 (Rust) como núcleo
+nativo y Next.js 16 (export estático) como interfaz. No hay servidor.
+
+## Preparar el entorno
+
+Requisitos en el README. Una vez instalados:
+
+```bash
+npm install
+powershell -File scripts/fetch-binaries.ps1   # PresentMon (verificado) + sidecar
+npm run app                                   # tauri dev
+```
+
+`scripts/fetch-binaries.ps1` es obligatorio la primera vez: `tauri.conf.json`
+declara `binaries/PresentMon.exe` y `binaries/cputemp.exe` como recursos, y sin
+ellos ni siquiera `cargo check` compila. **No los sustituyas por ficheros vacíos.**
+
+## Antes de abrir un PR
+
+```bash
+npm run check
+```
+
+Ejecuta ESLint, `tsc --noEmit`, Vitest, `cargo clippy -D warnings` y `cargo test`.
+La CI (`.github/workflows/ci.yml`) corre lo mismo en `windows-latest`, y el
+workflow de release depende de ella: un tag no puede publicar algo que no pase.
+
+## Reglas que no son negociables
+
+- **Nada de E/S en el hilo principal.** Todo comando que toque disco, red,
+  registro o lance un proceso es `#[tauri::command(async)]`. El hilo principal es
+  el mismo que el bucle de eventos, la bandeja, los atajos globales y el HUD.
+- **Los comandos reciben ids, no structs.** Un `Game` que viene de la webview es
+  entrada no confiable; se re-resuelve en Rust desde la caché de biblioteca.
+- **Escrituras atómicas.** Todo lo que persista pasa por `jsonstore`
+  (`<archivo>.tmp` + rename). Nunca un `fs::write` suelto a un fichero de datos.
+- **Nada de `unwrap()`/`expect()` en hilos de fondo.** El perfil de release usa
+  `panic = "abort"`: un panic se lleva la app entera.
+- **Binarios del sistema por ruta absoluta** (`%SystemRoot%\System32\…`), nunca
+  por `PATH`: el proceso puede estar elevado.
+- **Todo texto visible pasa por i18n**, con la clave en `es.ts` **y** en `en.ts`.
+  `npm run test` falla si los catálogos se desincronizan.
+- **Cada corrección de bug lleva su prueba de regresión** (Rust: `#[cfg(test)]`
+  junto al código; TS: `*.test.ts` junto al módulo).
+
+## Rendimiento
+
+Meteor vive en la bandeja del sistema y se dibuja encima de juegos: el coste en
+reposo y el coste por fotograma son requisitos, no detalles.
+
+- Mide antes y después: `powershell -File docs\perf\capture.ps1 -Label antes`
+  (ver `docs/perf/README.md`). Un PR de rendimiento sin números no se puede
+  revisar.
+- Si tocas el HUD, arranca con `METEOR_OVERLAY_DEBUG=1` y comprueba que el modo
+  de composición sigue siendo `OVERLAY`. Si baja a `COMPOSED`, el overlay le está
+  costando FPS al juego y el cambio no vale.
+- Nada de inyección de DLL en procesos de juegos, por seguridad frente a
+  anti-cheats. Esa decisión no se revisa.
+
+## Estilo
+
+- Comentarios y mensajes de commit en inglés; los textos de interfaz, el
+  CHANGELOG y esta documentación en español.
+- Commits: `feat: …`, `fix: …`, `refactor: …`, `perf: …`, `rel: …`. Una intención
+  por commit.
+- El CHANGELOG se actualiza en el mismo PR, bajo `[No publicado]`.

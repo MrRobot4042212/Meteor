@@ -1,10 +1,10 @@
 //! System / hardware info for the in-app "Mi equipo" panel and the metrics GPU
-//! picker. CPU/RAM/OS/disks come from `sysinfo`; the motherboard from the BIOS
-//! registry key; displays from Win32 GDI; and the GPU list (with metric-capable
-//! keys for the picker) from NVML (NVIDIA) and ADLX (AMD).
+//! picker. CPU/RAM/OS/disks come straight from Win32 and the registry
+//! (`sysstat.rs`); the motherboard from the BIOS registry key; displays from
+//! Win32 GDI; and the GPU list (with metric-capable keys for the picker) from
+//! NVML (NVIDIA) and ADLX (AMD).
 
 use serde::Serialize;
-use sysinfo::{Disks, System};
 
 /// A GPU as shown in the panel. `key` ("nvml:<i>" / "adlx:<i>") is set only for
 /// metric-capable GPUs — those can be picked for the overlay; empty otherwise.
@@ -72,44 +72,26 @@ const MB: u64 = 1024 * 1024;
 /// Gather everything for the panel. Best-effort: any source that fails is just
 /// omitted (empty list / `None`), never an error.
 pub fn collect() -> SystemInfo {
-    let mut sys = System::new();
-    sys.refresh_cpu();
-    sys.refresh_memory();
+    let cpu = crate::sysstat::cpu_brand().unwrap_or_else(|| "Desconocido".to_string());
+    let os = crate::sysstat::os_description().unwrap_or_else(|| "Desconocido".to_string());
+    let (cores, threads) = crate::sysstat::cpu_counts();
+    let (_, ram_total_mb) = crate::sysstat::mem_mb();
 
-    let cpu = sys
-        .cpus()
-        .first()
-        .map(|c| c.brand().trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Desconocido".to_string());
-
-    let os = {
-        let name = System::name().unwrap_or_default();
-        let ver = System::os_version().unwrap_or_default();
-        let joined = format!("{name} {ver}").trim().to_string();
-        if joined.is_empty() {
-            "Desconocido".to_string()
-        } else {
-            joined
-        }
-    };
-
-    let disks = Disks::new_with_refreshed_list()
-        .list()
-        .iter()
-        .map(|d| DiskInfo {
-            name: d.name().to_string_lossy().to_string(),
-            fs: d.file_system().to_string_lossy().to_string(),
-            total_mb: d.total_space() / MB,
-            available_mb: d.available_space() / MB,
+    let disks = crate::sysstat::drives()
+        .into_iter()
+        .map(|(name, fs, total, available)| DiskInfo {
+            name,
+            fs,
+            total_mb: total / MB,
+            available_mb: available / MB,
         })
         .collect();
 
     SystemInfo {
         cpu,
-        cpu_cores: sys.physical_core_count().unwrap_or(0),
-        cpu_threads: sys.cpus().len(),
-        ram_total_mb: sys.total_memory() / MB,
+        cpu_cores: cores,
+        cpu_threads: threads,
+        ram_total_mb,
         os,
         motherboard: motherboard(),
         gpus: gpus(),

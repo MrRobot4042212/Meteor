@@ -1,6 +1,22 @@
+; Meteor NSIS installer hooks.
+;
+; Historically the post-install hook offered to set the `RUNASADMIN` AppCompat
+; flag so Meteor would always start elevated. That was removed on purpose: an
+; always-elevated launcher passes its elevated token to **every game it spawns**,
+; and Meteor installs into a user-writable directory, so anything able to write
+; there would gain a silent path to administrator. Admin is opt-in per session
+; instead ("Reiniciar como administrador"), and only the metrics sidecars need it.
+;
+; The hooks below now only clean up that legacy flag.
+
 !macro NSIS_HOOK_POSTINSTALL
-  MessageBox MB_YESNO "Para que METEOR pueda medir las estadísticas de rendimiento de tus videojuegos (como los FPS o la temperatura), necesita ejecutarse con permisos de Administrador.$\n$\n¿Deseas configurar METEOR para que siempre se abra como Administrador de forma permanente?" IDNO skip_admin
-    ; Si el usuario dice que sí (IDYES), escribimos la clave de registro que fuerza el UAC en Windows
-    WriteRegStr HKCU "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\Meteor.exe" "~ RUNASADMIN"
-  skip_admin:
+  ; Migration for installs made by Meteor <= 0.1.1 that accepted the prompt.
+  DeleteRegValue HKCU "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\Meteor.exe"
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  DeleteRegValue HKCU "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\Meteor.exe"
+  ; Best effort: remove the elevated logon task older versions could create.
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN MeteorAutostart /F'
+  Pop $0
 !macroend

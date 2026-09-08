@@ -25,7 +25,7 @@ import {
 /*  Features that only exist after an interaction are handled two ways         */
 /*  (the "mixto" approach): the cheap & safe ones are auto-driven — the tour    */
 /*  opens the real context menu / detail page and highlights it — while the     */
-/*  global / in-game ones (Spotlight, overlay, drag&drop, multi-select) are     */
+/*  The in-game and app-wide ones (Spotlight, overlay, drag&drop, multi-      */
 /*  shown with an inline illustration instead of forcing the app into them.     */
 /*                                                                            */
 /*  Anchoring uses `data-tour="…"` attributes on the real components, so the    */

@@ -7,8 +7,21 @@ export const getLibrary = () => invoke<Game[]>('get_library');
 /** Last computed library from disk (instant paint; empty if never scanned). */
 export const cachedLibrary = () => invoke<Game[]>('cached_library');
 
-/** Launch any library entry. */
-export const launchGame = (game: Game) => invoke<void>('launch_game', { game });
+/** Reveal the main window (created hidden) once the UI has painted. */
+export const showMainWindow = () => invoke<void>('show_main_window');
+
+/** Launch any library entry, by id.
+ *  The backend re-resolves the entry from the library cache / manual store, so
+ *  the executable and protocol URI it launches are never built by the webview. */
+export const launchGame = (id: string) => invoke<void>('launch_game', { id });
+
+/** Whether any installed-games source changed since the last scan (cheap probe:
+ *  store folder / registry timestamps, no scanners, no PowerShell). */
+export const libraryChanged = () => invoke<boolean>('library_changed');
+
+/** High-resolution cover for the detail hero (reuses the cached IGDB image id). */
+export const resolveCoverHires = (name: string) =>
+  invoke<string | null>('resolve_cover_hires', { name });
 
 /** Resolve a cover image URL for a game name (SteamGridDB → Steam CDN, cached). */
 export const resolveCover = (name: string) =>
@@ -89,8 +102,9 @@ export const getPlaytime = (id: string) => invoke<PlayStat>('get_playtime', { id
 export const allPlaytime = () =>
   invoke<Record<string, PlayStat>>('all_playtime');
 
-/** Total size in bytes of a directory. */
-export const dirSize = (path: string) => invoke<number>('dir_size', { path });
+/** Size in bytes of a library entry install folder (null when it has none). */
+export const gameDirSize = (id: string) =>
+  invoke<number | null>('game_dir_size', { id });
 
 /** Extract the real icon embedded in an app's executable (cached local .ico path). */
 export const appIcon = (path: string) =>
@@ -110,12 +124,17 @@ export const getAutostart = () => invoke<boolean>('get_autostart');
 export const setAutostart = (enabled: boolean) =>
   invoke<void>('set_autostart', { enabled });
 
-/** Open a folder in the OS file manager. */
-export const openPath = (path: string) => invoke<void>('open_path', { path });
+/** Open an allowlisted community link in the user's browser (validated in Rust,
+ *  so it never navigates the app's own webview away). */
+export const openExternal = (url: string) => invoke<void>('open_external', { url });
+
+/** Reveal a library entry folder in the OS file manager (validated in Rust). */
+export const openGameFolder = (id: string) =>
+  invoke<void>('open_game_folder', { id });
 
 /** The user's own screenshots for a game (Steam + Windows Game Bar). Local paths. */
-export const userScreenshots = (game: Game) =>
-  invoke<string[]>('user_screenshots', { game });
+export const userScreenshots = (id: string) =>
+  invoke<string[]>('user_screenshots', { id });
 
 /** Get application settings. */
 export const getAppSettings = () => invoke<AppSettings>('get_app_settings');

@@ -1,15 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { listen } from '@tauri-apps/api/event';
 import { useLibrary } from '@/hooks/useLibrary';
 import {
   launchGame,
+  showMainWindow,
   removeGame,
   hideGame,
   setFavorite,
   setCategories,
-  openPath,
+  openGameFolder,
   removeCategory,
   setCategoryOrder,
   setGameType,
@@ -19,35 +21,18 @@ import type { Game, Category } from '@/lib/types';
 import { Sidebar, type Filter } from '@/components/Sidebar';
 import { GameCard } from '@/components/GameCard';
 import { ContextMenu, type MenuItem } from '@/components/ContextMenu';
-import { BulkCategoryDialog } from '@/components/BulkCategoryDialog';
-import { AddAppDialog } from '@/components/AddAppDialog';
-import { SettingsDialog } from '@/components/SettingsDialog';
-import { HiddenGamesModal } from '@/components/HiddenGamesModal';
-import { CoverDialog } from '@/components/CoverDialog';
-import { CategoryDialog } from '@/components/CategoryDialog';
-import { NewCategoryDialog } from '@/components/NewCategoryDialog';
-import { EditCategoryDialog } from '@/components/EditCategoryDialog';
 import { Splash } from '@/components/Splash';
 import { IntroSplash } from '@/components/IntroSplash';
-import { Spotlight } from '@/components/Spotlight';
 import { Footer } from '@/components/Footer';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { DetailView } from '@/components/DetailView';
 import { Home } from '@/components/Home';
 import { TopBar, type SortKey } from '@/components/TopBar';
 import { UpdatePrompt } from '@/components/UpdatePrompt';
-import { NotificationsPanel } from '@/components/NotificationsPanel';
 import { useTranslation } from 'react-i18next';
-import { Onboarding } from '@/components/Onboarding';
-import { GuidedTour } from '@/components/GuidedTour';
-import { Overlay } from '@/components/Overlay';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { SOURCE_ORDER } from '@/lib/sources';
 import { fuzzyScore } from '@/lib/fuzzy';
 import {
-  SearchIcon,
-  PlusIcon,
-  RefreshIcon,
   PlayIcon,
   StarIcon,
   TagIcon,
@@ -58,9 +43,24 @@ import {
   PencilIcon,
   AppIcon,
   GridIcon,
-  InfoIcon,
-  ScanIcon,
 } from '@/components/icons';
+
+// Loaded on demand: none of these render until the user opens something, so
+// keeping them in the first-load chunk only delayed the library appearing.
+const BulkCategoryDialog = dynamic(() => import('@/components/BulkCategoryDialog').then((m) => m.BulkCategoryDialog), { ssr: false });
+const AddAppDialog = dynamic(() => import('@/components/AddAppDialog').then((m) => m.AddAppDialog), { ssr: false });
+const SettingsDialog = dynamic(() => import('@/components/SettingsDialog').then((m) => m.SettingsDialog), { ssr: false });
+const HiddenGamesModal = dynamic(() => import('@/components/HiddenGamesModal').then((m) => m.HiddenGamesModal), { ssr: false });
+const CoverDialog = dynamic(() => import('@/components/CoverDialog').then((m) => m.CoverDialog), { ssr: false });
+const CategoryDialog = dynamic(() => import('@/components/CategoryDialog').then((m) => m.CategoryDialog), { ssr: false });
+const NewCategoryDialog = dynamic(() => import('@/components/NewCategoryDialog').then((m) => m.NewCategoryDialog), { ssr: false });
+const EditCategoryDialog = dynamic(() => import('@/components/EditCategoryDialog').then((m) => m.EditCategoryDialog), { ssr: false });
+const Spotlight = dynamic(() => import('@/components/Spotlight').then((m) => m.Spotlight), { ssr: false });
+const DetailView = dynamic(() => import('@/components/DetailView').then((m) => m.DetailView), { ssr: false });
+const NotificationsPanel = dynamic(() => import('@/components/NotificationsPanel').then((m) => m.NotificationsPanel), { ssr: false });
+const Onboarding = dynamic(() => import('@/components/Onboarding').then((m) => m.Onboarding), { ssr: false });
+const GuidedTour = dynamic(() => import('@/components/GuidedTour').then((m) => m.GuidedTour), { ssr: false });
+const Overlay = dynamic(() => import('@/components/Overlay').then((m) => m.Overlay), { ssr: false });
 
 /** Folder to reveal for a game: its install dir, else the exe's parent. */
 function folderOf(game: Game): string | null {
@@ -76,23 +76,36 @@ function folderOf(game: Game): string | null {
  * only the metrics HUD; the `main` window renders the full launcher. We resolve
  * the window label on the client (Tauri isn't present at static-export build time).
  */
+/** Which window this document is in. Read synchronously: `getCurrentWindow()`
+ *  needs no round trip, and doing it in an effect cost a wasted render pass plus
+ *  a frame of blank window at every startup. */
+function windowLabel(): string {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    // Not running under Tauri (e.g. plain `next dev`): default to the main app.
+    return 'main';
+  }
+}
+
 export default function Root() {
-  const [mode, setMode] = useState<'loading' | 'main' | 'overlay'>('loading');
-  useEffect(() => {
-    let label = 'main';
-    try {
-      label = getCurrentWindow().label;
-    } catch {
-      // Not running under Tauri (e.g. plain `next dev`): default to the main app.
-    }
-    setMode(label === 'overlay' ? 'overlay' : 'main');
-  }, []);
-  if (mode === 'loading') return null;
+  // `useState` with an initializer so it runs once, on the client, before paint.
+  const [mode] = useState<'main' | 'overlay'>(() =>
+    windowLabel() === 'overlay' ? 'overlay' : 'main',
+  );
   return mode === 'overlay' ? <Overlay /> : <MainApp />;
 }
 
 function MainApp() {
   const { t } = useTranslation();
+  // The window is created hidden (tauri.conf.json) and revealed here, after the
+  // first paint, so users never see an empty white rectangle on startup.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      showMainWindow().catch(() => {});
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
   const [introDone, setIntroDone] = useState(false);
 
   // Onboarding gate: 'unknown' until settings load, then 'needed' (first run) or
@@ -191,7 +204,10 @@ function MainApp() {
   }, [tourPending, booting, splashMounted]);
 
   // The game whose detail page is open (kept fresh from `games` by id).
-  const selected = selectedId ? games.find((g) => g.id === selectedId) ?? null : null;
+  const selected = useMemo(
+    () => (selectedId ? games.find((g) => g.id === selectedId) ?? null : null),
+    [games, selectedId],
+  );
 
   // The dashboard replaces the grid on the "Inicio" filter (unless searching).
   const showingHome = filter === 'home' && !query.trim();
@@ -277,7 +293,8 @@ function MainApp() {
   }, [games, filter, debouncedQuery, sort, playtimes]);
 
   // Items for the right-click context menu on a card.
-  function menuItems(game: Game): MenuItem[] {
+  const menuItems = (game: Game): MenuItem[] => menuItemsImpl(game);
+  function menuItemsImpl(game: Game): MenuItem[] {
     const items: MenuItem[] = [
       { label: t('menu.play'), icon: <PlayIcon className="h-4 w-4" />, onClick: () => handleLaunch(game) },
       {
@@ -297,7 +314,7 @@ function MainApp() {
         label: t('menu.openFolder'),
         icon: <FolderIcon className="h-4 w-4" />,
         onClick: () => {
-          openPath(folder).catch(() => flash(t('toast.folderOpenFailed')));
+          openGameFolder(game.id).catch(() => flash(t('toast.folderOpenFailed')));
         },
       });
     }
@@ -356,10 +373,33 @@ function MainApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, [selected, selectMode]);
 
-  function flash(msg: string) {
+  // The menu builder closes over most of MainApp's state, so it cannot be
+  // memoized — but the *callback* handed to each card can be, by reading the
+  // latest builder through a ref. Same for opening the detail page.
+  const menuItemsRef = useRef(menuItems);
+  useEffect(() => {
+    menuItemsRef.current = menuItems;
+  });
+  const handleCardContextMenu = useCallback((g: Game, x: number, y: number) => {
+    setMenu({ x, y, items: menuItemsRef.current(g) });
+  }, []);
+  const handleOpen = useCallback((g: Game) => setSelectedId(g.id), []);
+
+  const toastTimer = useRef<number | null>(null);
+  const flash = useCallback((msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(null), 2500);
-  }
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => {
+      toastTimer.current = null;
+      setToast(null);
+    }, 2500);
+  }, []);
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    },
+    [],
+  );
 
   // Notificación de mando conectado
   useEffect(() => {
@@ -368,7 +408,7 @@ function MainApp() {
     };
     window.addEventListener('gamepadconnected', onConnect);
     return () => window.removeEventListener('gamepadconnected', onConnect);
-  }, []);
+  }, [flash, t]);
 
   // Re-scan from scratch, showing the splash again (reset any earlier skip).
   function handleRescan() {
@@ -376,14 +416,15 @@ function MainApp() {
     refresh(true);
   }
 
-  async function handleLaunch(game: Game) {
+  // Stable identity: this is passed to memoized `GameCard`s.
+  const handleLaunch = useCallback(async (game: Game) => {
     try {
-      await launchGame(game);
+      await launchGame(game.id);
       flash(t('toast.launching', { name: game.name }));
     } catch (e) {
       flash(t('toast.launchFailed', { error: String(e) }));
     }
-  }
+  }, [t, flash]);
 
   // --- Category management --------------------------------------------------
   async function handleReorderCategories(names: string[]) {
@@ -417,14 +458,16 @@ function MainApp() {
   }
 
   // --- Multi-select ---------------------------------------------------------
-  function toggleSelect(game: Game) {
+  // Stable identity: this is passed to memoized `GameCard`s.
+  const toggleSelect = useCallback((game: Game) => {
     setSelectMode(true);
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      next.has(game.id) ? next.delete(game.id) : next.add(game.id);
+      if (next.has(game.id)) next.delete(game.id);
+      else next.add(game.id);
       return next;
     });
-  }
+  }, []);
 
   function exitSelection() {
     setSelectMode(false);
@@ -486,49 +529,62 @@ function MainApp() {
     flash(t('toast.categoriesAddedTo', { count: ids.length }));
   }
 
-  function handleRemove(game: Game) {
+  const doRemove = useCallback(
+    async (game: Game) => {
+      // Functional setters only: this is captured by a memoized handler, so
+      // reading render state from the closure would pin it to one render.
+      setSelectedId((cur) => (cur === game.id ? null : cur));
+      setGames((prev) => prev.filter((g) => g.id !== game.id));
+      try {
+        await removeGame(game.id);
+      } catch {
+        refresh();
+      }
+    },
+    [refresh, setGames],
+  );
+
+  const doHide = useCallback(
+    async (game: Game) => {
+      setSelectedId((cur) => (cur === game.id ? null : cur));
+      setGames((prev) => prev.filter((g) => g.id !== game.id));
+      try {
+        await hideGame(game.id);
+      } catch {
+        refresh();
+      }
+    },
+    [refresh, setGames],
+  );
+
+  // Stable identity: this is passed to memoized `GameCard`s.
+  const handleRemove = useCallback((game: Game) => {
     setConfirm({
       title: t('confirm.removeTitle'),
       message: t('confirm.removeBody', { name: game.name }),
       confirmLabel: t('common.remove'),
       onConfirm: () => doRemove(game),
     });
-  }
+  }, [t, doRemove]);
 
-  async function doRemove(game: Game) {
-    if (selectedId === game.id) setSelectedId(null);
-    setGames((prev) => prev.filter((g) => g.id !== game.id));
-    try {
-      await removeGame(game.id);
-    } catch {
-      refresh();
-    }
-  }
 
-  function handleHide(game: Game) {
+  // Stable identity: this is passed to memoized `GameCard`s.
+  const handleHide = useCallback((game: Game) => {
     setConfirm({
       title: t('confirm.hideTitle'),
       message: t('confirm.hideBody', { name: game.name }),
       confirmLabel: t('common.hide'),
       onConfirm: () => doHide(game),
     });
-  }
+  }, [t, doHide]);
 
-  async function doHide(game: Game) {
-    if (selectedId === game.id) setSelectedId(null);
-    setGames((prev) => prev.filter((g) => g.id !== game.id));
-    try {
-      await hideGame(game.id);
-    } catch {
-      refresh();
-    }
-  }
 
   // Reclassify an entry between game and application. The backend re-derives the
   // real source on each scan, so we optimistically mirror its mapping (→app sets
   // 'app'; →game from an app becomes the generic 'windows' game source) and then
   // refresh so covers/grouping reconcile (a now-game gets IGDB art).
-  async function handleToggleType(game: Game) {
+  // Stable identity: this is passed to memoized `GameCard`s.
+  const handleToggleType = useCallback(async (game: Game) => {
     const toApp = game.source !== 'app';
     const optimisticSource = toApp ? 'app' : 'windows';
     setGames((prev) =>
@@ -543,9 +599,10 @@ function MainApp() {
       /* refresh below reconciles on failure */
     }
     refresh();
-  }
+  }, [t, flash, refresh, setGames]);
 
-  async function handleToggleFavorite(game: Game) {
+  // Stable identity: this is passed to memoized `GameCard`s.
+  const handleToggleFavorite = useCallback(async (game: Game) => {
     const next = !game.favorite;
     setGames((prev) =>
       prev.map((g) => (g.id === game.id ? { ...g, favorite: next } : g)),
@@ -555,7 +612,7 @@ function MainApp() {
     } catch {
       refresh();
     }
-  }
+  }, [refresh, setGames]);
 
   // A game card was dragged onto Favoritos or a category in the sidebar.
   async function handleDropGame(target: Filter, gameId: string) {
@@ -720,8 +777,8 @@ function MainApp() {
                         onToggleFavorite={handleToggleFavorite}
                         onEditCategories={setEditingCategories}
                         onDragStateChange={setDragging}
-                        onOpen={(g) => setSelectedId(g.id)}
-                        onContextMenu={(g, x, y) => setMenu({ x, y, items: menuItems(g) })}
+                        onOpen={handleOpen}
+                        onContextMenu={handleCardContextMenu}
                         selectionMode={selectMode}
                         selected={selectedIds.has(game.id)}
                         onToggleSelect={toggleSelect}

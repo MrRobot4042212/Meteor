@@ -12,14 +12,12 @@
 //! without admin.
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
-#[cfg(not(windows))]
-use sysinfo::System;
+use std::time::{Duration, Instant};
 #[cfg(windows)]
 use tauri::Emitter;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[cfg(windows)]
 use crate::overlay;
@@ -53,6 +51,19 @@ static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 /// Full overlay render config (colors, font size, which metrics, position…),
 /// snapshotted so the native HUD renderer can read it each tick.
 static RENDER_CFG: Mutex<Option<crate::models::OverlaySettings>> = Mutex::new(None);
+/// Whether a game is currently published (mirrors `CURRENT_GAME.is_some()` as an
+/// atomic, so the cputemp controller does not take a mutex twice a second).
+static HAS_GAME: AtomicBool = AtomicBool::new(false);
+/// Bumped whenever any live config changes (`configure`, `set_gpu`,
+/// `set_render_cfg`, `set_settings_open`). The sampler clones the config only
+/// when this moves, instead of cloning ~6 Strings on every tick.
+static CFG_GEN: AtomicU64 = AtomicU64::new(0);
+/// Auto-reset event the sampler waits on, as a raw HANDLE (0 = not created yet).
+/// Lets the thread block indefinitely while the overlay is off or no game is
+/// running, and wake instantly when that changes — instead of ticking ~86 000
+/// times a day to discover there is nothing to draw.
+static WAKE_EVENT: AtomicIsize = AtomicIsize::new(0);
+
 /// Live overlay health, derived from the swapchain's real composition mode:
 /// 0 = unknown (no game / not yet measured), 1 = free (HUD on a hardware MPO plane →
 /// the game keeps independent-flip), 2 = costing (DWM is compositing the HUD → the game
@@ -109,16 +120,77 @@ pub fn configure(enabled: bool, interval_ms: u64, fps_wanted: bool, cpu_temp_wan
     FPS_WANTED.store(fps_wanted, Ordering::Relaxed);
     CPU_TEMP_WANTED.store(cpu_temp_wanted, Ordering::Relaxed);
     INTERVAL_MS.store(interval_ms.clamp(200, 5000), Ordering::Relaxed);
+    bump_config();
+}
+
+/// Mark the live config as changed and wake the sampler so it applies it now.
+fn bump_config() {
+    CFG_GEN.fetch_add(1, Ordering::Relaxed);
+    wake();
+    wake_sidecars();
+}
+
+/// Wake signal for the PresentMon / cputemp controller threads.
+///
+/// They used to poll twice a second forever — `cputemp` even without the
+/// elevation early-out PresentMon had, so a non-admin user paid 2 wakeups a
+/// second for a sidecar that could never start.
+static SIDECAR_WAKE: (Mutex<u64>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+
+/// Wake both sidecar controllers.
+pub fn wake_sidecars() {
+    let (lock, cv) = &SIDECAR_WAKE;
+    let mut gen = lock.lock().unwrap_or_else(|e| e.into_inner());
+    *gen = gen.wrapping_add(1);
+    cv.notify_all();
+}
+
+/// Park a sidecar controller until something changes (or `timeout` elapses).
+/// `seen` carries the last observed generation, so a wake between two waits is
+/// never missed.
+pub fn wait_sidecar(seen: &mut u64, timeout: Option<Duration>) {
+    let (lock, cv) = &SIDECAR_WAKE;
+    let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = match timeout {
+        Some(d) => cv
+            .wait_timeout_while(guard, d, |gen| *gen == *seen)
+            .map(|(g, _)| g)
+            .unwrap_or_else(|e| e.into_inner().0),
+        None => cv
+            .wait_while(guard, |gen| *gen == *seen)
+            .unwrap_or_else(|e| e.into_inner()),
+    };
+    *seen = *guard;
+}
+
+/// Wake the sampler thread (config changed, game started/stopped…).
+pub fn wake() {
+    #[cfg(windows)]
+    {
+        let raw = WAKE_EVENT.load(Ordering::Relaxed);
+        if raw != 0 {
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::System::Threading::SetEvent;
+            // SAFETY: the handle is created once by the sampler thread and lives
+            // for the process lifetime; SetEvent on an auto-reset event is safe
+            // to call from any thread.
+            unsafe {
+                let _ = SetEvent(HANDLE(raw as *mut core::ffi::c_void));
+            }
+        }
+    }
 }
 
 /// Set which GPU the sampler reads: "auto" | "nvml:<i>" | "adlx:<i>".
 pub fn set_gpu(sel: String) {
-    *GPU_SELECT.lock().unwrap() = Some(sel);
+    *GPU_SELECT.lock().unwrap_or_else(|e| e.into_inner()) = Some(sel);
+    bump_config();
 }
 
 /// Mark the in-game overlay settings screen open/closed (hides/shows the native HUD).
 pub fn set_settings_open(open: bool) {
     SETTINGS_OPEN.store(open, Ordering::Relaxed);
+    wake();
 }
 
 /// Whether the in-game overlay settings screen is currently open.
@@ -128,17 +200,18 @@ pub fn settings_open() -> bool {
 
 /// Snapshot the full overlay config for the native HUD renderer.
 pub fn set_render_cfg(cfg: crate::models::OverlaySettings) {
-    *RENDER_CFG.lock().unwrap() = Some(cfg);
+    *RENDER_CFG.lock().unwrap_or_else(|e| e.into_inner()) = Some(cfg);
+    bump_config();
 }
 
 fn render_cfg() -> Option<crate::models::OverlaySettings> {
-    RENDER_CFG.lock().unwrap().clone()
+    RENDER_CFG.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 fn current_gpu() -> String {
     GPU_SELECT
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .clone()
         .unwrap_or_else(|| "auto".to_string())
 }
@@ -146,11 +219,20 @@ fn current_gpu() -> String {
 /// Published by the playtime watcher each poll: the foreground game (if any).
 pub fn set_current_game(name: Option<String>, pid: Option<u32>) {
     CURRENT_PID.store(pid.unwrap_or(0), Ordering::Relaxed);
-    *CURRENT_GAME.lock().unwrap() = name;
+    let had = HAS_GAME.load(Ordering::Relaxed);
+    let has = name.is_some();
+    HAS_GAME.store(has, Ordering::Relaxed);
+    *CURRENT_GAME.lock().unwrap_or_else(|e| e.into_inner()) = name;
+    // Only nudge the threads on a transition: this is called on every watcher
+    // poll while a game runs.
+    if had != has {
+        wake();
+        wake_sidecars();
+    }
 }
 
 fn current_game() -> Option<String> {
-    CURRENT_GAME.lock().unwrap().clone()
+    CURRENT_GAME.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// PID of the running game (0 = none). Read by the PresentMon controller.
@@ -173,27 +255,112 @@ pub fn want_cpu_temp() -> bool {
 
 /// Whether a game is currently running (the overlay's gate for the sidecar).
 pub fn has_game() -> bool {
-    CURRENT_GAME.lock().unwrap().is_some()
+    HAS_GAME.load(Ordering::Relaxed)
 }
 
 const MB: u64 = 1024 * 1024;
 
+/// How long the sampler stays idle before releasing the GPU telemetry backends
+/// and the HUD's DirectComposition stack.
+#[cfg(windows)]
+const BACKEND_IDLE_SECS: u64 = 60;
+
+/// Block until the wake event fires, a window message arrives, or the timeout
+/// elapses; then drain the HUD window's message queue.
+///
+/// `MsgWaitForMultipleObjectsEx` (rather than `sleep` + `PeekMessage`) is what
+/// lets the idle case wait *indefinitely* without leaving the HUD window's queue
+/// unattended — an unpumped window makes Windows treat the process as hung.
+#[cfg(windows)]
+fn wait_tick(timeout_ms: u32) {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
+    };
+    let raw = WAKE_EVENT.load(Ordering::Relaxed);
+    // SAFETY: `raw` is either 0 or the process-lifetime event handle below.
+    unsafe {
+        if raw != 0 {
+            let handles = [HANDLE(raw as *mut core::ffi::c_void)];
+            MsgWaitForMultipleObjectsEx(
+                Some(&handles),
+                timeout_ms,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
+        } else {
+            // No wake event (CreateEventW failed): never wait forever on window
+            // messages alone, or the HUD would never draw again. Fall back to a
+            // 1 s poll, which is what the sampler used to do unconditionally.
+            let capped = timeout_ms.min(1000);
+            MsgWaitForMultipleObjectsEx(None, capped, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        }
+    }
+    overlay::pump();
+}
+
+/// Size and DPI scale of the monitor showing `hwnd` (falls back to the primary).
+///
+/// Read straight from Win32 on this thread. It used to go through
+/// `app.get_webview_window("main").primary_monitor()`, which blocks on a round
+/// trip to the main event loop **on every drawn frame** (debt C6) — and always
+/// answered with the primary monitor, so the HUD was mispositioned on a
+/// secondary display.
+#[cfg(windows)]
+fn monitor_geometry(hwnd: isize) -> (i32, i32, f64) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    };
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+
+    // SAFETY: plain Win32 queries; `info` is fully initialized with its cbSize.
+    unsafe {
+        let monitor = MonitorFromWindow(
+            HWND(hwnd as *mut core::ffi::c_void),
+            MONITOR_DEFAULTTOPRIMARY,
+        );
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return (1920, 1080, 1.0);
+        }
+        let width = info.rcMonitor.right - info.rcMonitor.left;
+        let height = info.rcMonitor.bottom - info.rcMonitor.top;
+        let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+        (width, height, dpi_x as f64 / 96.0)
+    }
+}
+
 /// Start the sampler thread. Spawned once from `setup`.
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
-        // nvml.dll is loaded once; absent/failed on non-NVIDIA systems → no GPU.
-        let nvml = Nvml::init().ok();
-        // Also init AMD's ADLX (loads amdadlx64.dll) so machines with both vendors
-        // can pick either GPU. Fails gracefully (amd=false) without an AMD driver.
-        // Init from this thread; all ADLX calls stay on it.
+        // The wake event this thread parks on. Created here so the handle belongs
+        // to the sampler for the whole process lifetime.
         #[cfg(windows)]
-        let amd = crate::amd::init();
-        // Global CPU%/RAM: direct Win32 (GetSystemTimes / GlobalMemoryStatusEx) on
-        // Windows — no per-tick sysinfo process refresh; sysinfo elsewhere.
+        {
+            use windows::Win32::System::Threading::CreateEventW;
+            // SAFETY: auto-reset, unnamed, initially unsignaled event.
+            if let Ok(handle) = unsafe { CreateEventW(None, false, false, None) } {
+                WAKE_EVENT.store(handle.0 as isize, Ordering::Relaxed);
+            }
+        }
+        // GPU telemetry backends are created on the first tick that actually
+        // draws and released after `BACKEND_IDLE_SECS` without a game: loading
+        // nvml.dll / amdadlx64.dll at startup cost every user memory (and a
+        // driver DLL) even with the overlay switched off.
+        let mut nvml: Option<Nvml> = None;
+        #[cfg(windows)]
+        let mut amd = false;
+        #[cfg(windows)]
+        let mut backends_idle_since: Option<Instant> = None;
+        // Global CPU%/RAM: direct Win32 (GetSystemTimes / GlobalMemoryStatusEx),
+        // one syscall each and zero allocation.
         #[cfg(windows)]
         let mut cpu_meter = crate::sysstat::CpuMeter::new();
-        #[cfg(not(windows))]
-        let mut sys = System::new();
         // Tracks whether the overlay window is currently shown, to avoid spamming
         // show()/hide() every tick.
         let mut shown = false;
@@ -230,13 +397,33 @@ pub fn start(app: AppHandle) {
         let mut diag_state: (bool, bool, bool) = (false, false, false);
         #[cfg(windows)]
         let mut diag_heartbeat = std::time::Instant::now();
+        // Cached live config, refreshed only when `CFG_GEN` moves.
+        let mut cfg_gen: u64 = u64::MAX;
+        let mut cfg: Option<crate::models::OverlaySettings> = None;
+        let mut sel = String::from("auto");
 
         loop {
+            // Idle (overlay off, no game, or the settings screen open) → wait with
+            // no timeout; a config change or a game starting wakes us instantly.
+            let active_now = OVERLAY_ENABLED.load(Ordering::Relaxed)
+                && HAS_GAME.load(Ordering::Relaxed)
+                && !SETTINGS_OPEN.load(Ordering::Relaxed);
+            #[cfg(windows)]
+            wait_tick(if active_now {
+                INTERVAL_MS.load(Ordering::Relaxed) as u32
+            } else {
+                windows::Win32::System::Threading::INFINITE
+            });
+            #[cfg(not(windows))]
             std::thread::sleep(Duration::from_millis(INTERVAL_MS.load(Ordering::Relaxed)));
 
-            // Drain the HUD window's message queue (passive, but stays responsive).
-            #[cfg(windows)]
-            overlay::pump();
+            // Refresh the cached config only when something actually changed.
+            let gen = CFG_GEN.load(Ordering::Relaxed);
+            if gen != cfg_gen {
+                cfg_gen = gen;
+                cfg = render_cfg();
+                sel = current_gpu();
+            }
 
             // Idle path: overlay off, no game, or the in-game settings screen open →
             // keep the native HUD hidden (the WebView2 window shows the settings).
@@ -289,6 +476,26 @@ pub fn start(app: AppHandle) {
                         last_fg = 0; // re-assert topmost when we show again
                     }
                 }
+                // Release the GPU backends and the HUD's DirectComposition stack
+                // after a while with no game. `hide()` only hides the window: the
+                // D3D11 device, swapchain, D2D context and HWND used to stay
+                // resident for the rest of the session once a game had run.
+                #[cfg(windows)]
+                {
+                    let idle_for = backends_idle_since.get_or_insert_with(Instant::now);
+                    if idle_for.elapsed() >= Duration::from_secs(BACKEND_IDLE_SECS) {
+                        if nvml.is_some() {
+                            nvml = None;
+                        }
+                        if amd {
+                            crate::amd::shutdown();
+                            amd = false;
+                            applied_gpu.clear();
+                        }
+                        overlay::teardown();
+                        backends_idle_since = None; // released; nothing left to do
+                    }
+                }
                 // No game in the foreground → health is meaningless; clear it and reset
                 // the adaptive measure state so the next session re-measures from scratch.
                 #[cfg(windows)]
@@ -305,6 +512,23 @@ pub fn start(app: AppHandle) {
                 continue;
             }
 
+            // A game is being drawn: make sure the telemetry backends exist.
+            #[cfg(windows)]
+            {
+                backends_idle_since = None;
+                if nvml.is_none() {
+                    nvml = Nvml::init().ok();
+                }
+                if !amd {
+                    amd = crate::amd::init();
+                    applied_gpu.clear();
+                }
+            }
+            #[cfg(not(windows))]
+            if nvml.is_none() {
+                nvml = Nvml::init().ok();
+            }
+
             // CPU + RAM. The first reading after init may be 0%; it settles on the
             // next tick (the CPU% meter has no previous delta yet).
             #[cfg(windows)]
@@ -312,16 +536,10 @@ pub fn start(app: AppHandle) {
                 let (used, total) = crate::sysstat::mem_mb();
                 (cpu_meter.pct(), used, total)
             };
+            // Non-Windows builds have no telemetry source (the whole overlay is
+            // Win32); the sampler still runs so the module compiles and tests.
             #[cfg(not(windows))]
-            let (cpu_usage, ram_used_mb, ram_total_mb) = {
-                sys.refresh_cpu();
-                sys.refresh_memory();
-                (
-                    sys.global_cpu_info().cpu_usage(),
-                    sys.used_memory() / MB,
-                    sys.total_memory() / MB,
-                )
-            };
+            let (cpu_usage, ram_used_mb, ram_total_mb) = (0.0f32, 0u64, 0u64);
 
             // GPU (NVIDIA via NVML), all best-effort.
             let mut sample = MetricsSample {
@@ -351,7 +569,8 @@ pub fn start(app: AppHandle) {
             sample.frametime_ms = frametime;
 
             // Which GPU to read: "auto" | "nvml:<i>" | "adlx:<i>" (see set_gpu).
-            let sel = current_gpu();
+            // `sel` is refreshed at the top of the loop only when the config
+            // generation moved, so a steady tick allocates nothing here.
             let nvml_idx = sel.strip_prefix("nvml:").and_then(|s| s.parse::<u32>().ok());
             #[cfg(windows)]
             let want_adlx = sel.starts_with("adlx:");
@@ -359,7 +578,7 @@ pub fn start(app: AppHandle) {
             // Apply a changed ADLX selection (only when it changes — re-selecting
             // every tick is wasteful). "auto" on an AMD-only box prefers discrete.
             #[cfg(windows)]
-            if amd && sel != applied_gpu {
+            if amd && sel.as_str() != applied_gpu.as_str() {
                 if let Some(i) = sel.strip_prefix("adlx:").and_then(|s| s.parse::<usize>().ok()) {
                     crate::amd::select(i);
                 } else if nvml.is_none() {
@@ -433,15 +652,10 @@ pub fn start(app: AppHandle) {
             // injection into the game process.
             #[cfg(windows)]
             {
-                if let Some(cfg) = render_cfg() {
-                    // Read the primary monitor from the always-present `main` window —
-                    // the overlay WebView no longer exists during gameplay (it's created
-                    // on demand only for the settings screen), so we can't query it here.
-                    let (mon_w, mon_h, scale) = app
-                        .get_webview_window("main")
-                        .and_then(|w| w.primary_monitor().ok().flatten())
-                        .map(|m| (m.size().width as i32, m.size().height as i32, m.scale_factor()))
-                        .unwrap_or((1920, 1080, 1.0));
+                if let Some(cfg) = cfg.as_ref() {
+                    // Geometry of the monitor the game is on, read directly from
+                    // Win32 on this thread (no round trip to the main event loop).
+                    let (mon_w, mon_h, scale) = monitor_geometry(overlay::foreground());
 
                     // A foreground change starts a fresh measure "session": let the HUD
                     // present for a moment, then read the real composition mode. Also the
@@ -468,7 +682,7 @@ pub fn start(app: AppHandle) {
                             shown = false;
                         }
                     } else {
-                        overlay::render(&cfg, &sample, mon_w, mon_h, scale);
+                        overlay::render(cfg, &sample, mon_w, mon_h, scale);
                         shown = true;
 
                         // Classify free vs costing once the present window has settled

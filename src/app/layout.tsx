@@ -4,14 +4,18 @@ import './globals.css';
 import { I18nProvider } from '@/i18n/I18nProvider';
 
 // Oxanium is the UI font (body + display); Source Code Pro for monospace bits.
+// Explicit weights: without them next/font ships the whole variable axis, which
+// is a much bigger file than the four weights this UI actually uses.
 const oxanium = Oxanium({
   subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
   variable: '--font-oxanium',
   display: 'swap',
 });
 
 const mono = Source_Code_Pro({
   subsets: ['latin'],
+  weight: ['400', '600'],
   variable: '--font-mono',
   display: 'swap',
 });

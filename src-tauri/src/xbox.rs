@@ -1,5 +1,8 @@
 use crate::models::{Game, GameSource};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Scan Xbox / Microsoft Store (Game Pass) games.
 ///
@@ -9,6 +12,7 @@ use std::path::{Path, PathBuf};
 /// resolve each game's AUMID so it launches through the shell like the Store
 /// does. If PowerShell is unavailable we fall back to scanning `XboxGames`.
 pub fn scan() -> Result<Vec<Game>, String> {
+    let _span = crate::perf::Span::new("xbox::scan");
     let appx = scan_appx();
     if !appx.is_empty() {
         return Ok(appx);
@@ -22,6 +26,72 @@ struct AppxGame {
     name: Option<String>,
     aumid: Option<String>,
     loc: Option<String>,
+}
+
+/// Hard cap for the AppX enumeration. `Get-AppxPackage` can stall indefinitely on
+/// a damaged package store or a slow-to-mount network profile, and this runs on
+/// the main thread inside `get_library`, so it must never block forever.
+const APPX_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Absolute path to the system PowerShell. Resolved from `%SystemRoot%` instead
+/// of `PATH`: Meteor may run elevated, and a `powershell.exe` planted earlier in
+/// a writable `PATH` entry would then execute with the elevated token.
+fn powershell_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        PathBuf::from(root).join("System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("powershell")
+    }
+}
+
+/// Run a child to completion with a deadline, returning its stdout. On timeout
+/// the child is killed and `None` returned, so the caller degrades to the folder
+/// scan instead of hanging the library scan.
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null());
+    let mut child = cmd.spawn().ok()?;
+    // Drain stdout on a helper thread: a full pipe buffer would deadlock the
+    // child before it can exit, and the deadline below would then always fire.
+    let stdout = child.stdout.take();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout {
+            let _ = out.read_to_end(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                return None;
+            }
+        }
+        if Instant::now() >= deadline {
+            eprintln!(
+                "[xbox] AppX enumeration timed out after {}s; falling back to the folder scan",
+                timeout.as_secs()
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The child is gone, so the reader thread is about to finish.
+    let buf = rx.recv_timeout(Duration::from_secs(2)).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Enumerate AppX packages, keep those that are games (have a
@@ -45,7 +115,7 @@ $out = foreach ($p in Get-AppxPackage) {
 ConvertTo-Json -Compress -InputObject @($out)
 "#;
 
-    let mut cmd = std::process::Command::new("powershell");
+    let mut cmd = Command::new(powershell_path());
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT]);
     // Don't flash a console window when spawning PowerShell from the GUI.
     #[cfg(windows)]
@@ -54,11 +124,9 @@ ConvertTo-Json -Compress -InputObject @($out)
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = cmd.output();
-    let Ok(output) = output else {
+    let Some(stdout) = run_with_timeout(cmd, APPX_TIMEOUT) else {
         return Vec::new();
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         return Vec::new();

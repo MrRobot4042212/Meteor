@@ -346,6 +346,7 @@ export const es = {
     promoMedia: 'Media Promocional',
     myScreenshots: 'Mis capturas',
     noScreenshots: 'No hay capturas tuyas de este juego. Se buscan en las capturas de Steam (F12) y en la galería de Windows Game Bar (Win+Alt+Impr Pant).',
+    showAllScreenshots: 'Ver las {{count}} capturas',
     videosTrailers: 'Vídeos y Tráilers',
     trailer: 'Tráiler',
     playTrailer: 'Reproducir tráiler',

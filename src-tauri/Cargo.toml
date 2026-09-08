@@ -6,10 +6,13 @@ authors = ["Alfonso"]
 edition = "2021"
 rust-version = "1.77"
 
-# The library is what main.rs (and mobile entry points) call into.
+# The library is what main.rs calls into. Only `rlib` is needed: `staticlib` and
+# `cdylib` are the iOS/Android entry points, and building them made cargo link
+# the crate three times — with fat LTO and codegen-units=1, linking is the
+# dominant cost of a release build of a Windows-only app.
 [lib]
 name = "meteor_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -18,7 +21,11 @@ tauri-build = { version = "2", features = [] }
 cc = "1"
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
+# No `image-png`/`image-ico`: tauri-codegen decodes `icons/icon.ico` to raw RGBA
+# at build time (see tauri-codegen `CachedIcon::new_ico`), so nothing decodes an
+# image at runtime. The feature pulled in the `image` crate plus a second copy of
+# `png` for no reason.
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 # Launch Meteor on Windows login so the playtime/Discord watcher runs in the
@@ -32,16 +39,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 steamlocate = "2.1"
 ureq = { version = "2", features = ["json", "tls"] }
-sysinfo = "0.30"
 # Discord Rich Presence over the local IPC pipe (pure Rust, no Discord SDK).
 discord-rich-presence = "0.2"
 # NVIDIA GPU telemetry for the in-game metrics overlay (usage, temp, VRAM,
 # clocks, power). Loads nvml.dll at runtime; on non-NVIDIA systems init fails
-# gracefully and the overlay just omits GPU metrics. CPU/RAM come from sysinfo.
+# gracefully and the overlay just omits GPU metrics. CPU/RAM come from Win32.
 nvml-wrapper = "0.10"
 
 # Registry-backed scanners (GOG, EA, Ubisoft) are Windows-only.
 [target.'cfg(windows)'.dependencies]
+# Same version Tauri's runtime already links, so no duplicate crate. Used to tell
+# WebView2 to release memory while Meteor sits in the tray (see lib.rs).
+webview2-com = "0.38"
+# Deliberately NOT bumped to 0.56 (which Tauri itself pulls, so `cargo tree -d`
+# reports duplicates): 0.56 changes `HKEY` from `isize` to `*mut c_void`, which
+# would churn every registry scanner for a build-graph cleanup with no runtime
+# effect. Revisit when a scanner needs touching anyway.
 winreg = "0.52"
 # Pure-Rust PE reader to extract the icon embedded in an app's .exe, so any
 # installed app gets its correct icon without a curated list or native libs.
@@ -59,12 +72,23 @@ windows = { version = "0.61", features = [
     # Resolve the user's display/full name for the Home greeting (GetUserNameExW).
     "Win32_Security_Authentication_Identity",
     "Win32_System_Threading",
+    # Kill-on-close Job Object for the metrics sidecars (see jobobj.rs), so an
+    # elevated PresentMon/cputemp can never outlive Meteor.
+    "Win32_System_JobObjects",
     # Cheap global CPU%/RAM for the metrics sampler (GetSystemTimes /
-    # GlobalMemoryStatusEx), replacing the per-tick sysinfo refresh.
+    # GlobalMemoryStatusEx) plus the CPU/RAM description for the system panel.
     "Win32_System_SystemInformation",
+    # Process enumeration for the playtime watcher and drive/volume info for the
+    # "Mi equipo" panel — both used to come from the `sysinfo` crate.
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Storage_FileSystem",
+    "Win32_System_WindowsProgramming",
     # Native layered HUD window (lightweight overlay): module handle for the window class.
     "Win32_System_LibraryLoader",
     "Win32_UI_Shell",
+    # Per-monitor DPI for the HUD (GetDpiForMonitor), read on the sampler thread
+    # instead of hopping to the main thread for primary_monitor().
+    "Win32_UI_HiDpi",
     # MPO-friendly HUD: DirectComposition + DXGI flip swapchain + Direct2D/DirectWrite,
     # so DWM can promote the overlay to a hardware plane and the game keeps independent
     # flip (no composition / input lag). Falls back to the GDI layered window.
@@ -86,12 +110,8 @@ lto = true
 opt-level = "s"
 strip = true
 
-# sysinfo 0.30 has an unguarded subtraction in its Windows process-time code
-# (`compute_start`: process_times/10_000_000 - epoch). When GetProcessTimes fails for a
-# protected/system process it leaves the time at 0, so the subtraction underflows. In
-# release this just wraps (overflow-checks already off) and yields a bogus start_time we
-# never read; but a debug build panics and kills the playtime watcher thread. Disable
-# overflow checks for *just* this crate in dev so it matches release behaviour, without
-# weakening overflow checks on our own code.
-[profile.dev.package.sysinfo]
-overflow-checks = false
+# Dependencies are compiled once and then run for the whole dev session, so
+# optimizing them costs nothing per iteration and makes `tauri dev` usable: the
+# metrics sampler, PE icon parsing and JSON work are all in dependency code.
+[profile.dev.package."*"]
+opt-level = 2

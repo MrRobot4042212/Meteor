@@ -1,0 +1,4 @@
+# rust-lld is several times faster than link.exe on a crate graph this size, and
+# linking is what dominates a Meteor build (fat LTO, codegen-units = 1).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=-fuse-ld=lld-link"]

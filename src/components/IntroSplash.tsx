@@ -10,10 +10,10 @@ export function IntroSplash({ onFinish }: { onFinish: () => void }) {
   const [exiting, setExiting] = useState(false);
 
   useEffect(() => {
-    // Show the intro for 1.5 seconds, then begin fade out.
-    const t1 = window.setTimeout(() => setExiting(true), 1500);
-    // After 500ms fade transition, unmount.
-    const t2 = window.setTimeout(() => onFinish(), 2000);
+    // Short on purpose: this sits between the user's click and their library.
+    // It was 1.5 s + a 0.5 s fade, i.e. two seconds of nothing on every launch.
+    const t1 = window.setTimeout(() => setExiting(true), 600);
+    const t2 = window.setTimeout(() => onFinish(), 850);
 
     return () => {
       window.clearTimeout(t1);

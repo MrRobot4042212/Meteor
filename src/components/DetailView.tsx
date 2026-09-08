@@ -4,7 +4,14 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import type { Game, PlayStat, Session } from '@/lib/types';
-import { getPlaytime, dirSize, openPath, userScreenshots } from '@/lib/tauri';
+import {
+  getPlaytime,
+  gameDirSize,
+  openGameFolder,
+  openExternal,
+  resolveCoverHires,
+  userScreenshots,
+} from '@/lib/tauri';
 import { coverSrc } from '@/lib/cover';
 import { SOURCE_META } from '@/lib/sources';
 import {
@@ -29,7 +36,36 @@ import {
   GearIcon,
 } from './icons';
 
+/** Screenshots rendered before the "show all" button. Decoding a full gallery
+ *  at once is the most expensive thing this page can do. */
+const SHOTS_INITIAL = 12;
+
 type T = (key: string, opts?: Record<string, unknown>) => string;
+
+/** A community link. Opens in the user's browser through a Rust command with a
+ *  host allowlist — a plain `<a href>` would navigate this window away from the
+ *  app, and there is no back button in a launcher. */
+function ExternalLink({
+  href,
+  className,
+  children,
+}: {
+  href: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        openExternal(href).catch(() => {});
+      }}
+      className={className}
+    >
+      {children}
+    </button>
+  );
+}
 
 function formatPlaytime(seconds: number, t: T): string {
   if (seconds < 60) return t('detail.noRecord');
@@ -94,12 +130,13 @@ export function DetailView({
   useEffect(() => {
     let alive = true;
     setShots([]);
+    setShotLimit(SHOTS_INITIAL);
     getPlaytime(game.id)
       .then((p) => alive && setPlay(p))
       .catch(() => {});
     if (!isApp) {
       // The user's own screenshots (Steam / Game Bar), not promotional art.
-      userScreenshots(game)
+      userScreenshots(game.id)
         .then((s) => alive && setShots(s))
         .catch(() => {});
     }
@@ -109,12 +146,30 @@ export function DetailView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game.id, game.name, isApp]);
 
+  // Hi-res cover for the hero. The grid stores `t_cover_big` (264×374) since
+  // that is what a 240px card needs; this pulls the 2x variant for the one place
+  // it is rendered large, reusing the cached IGDB image id (no new search).
+  const [shotLimit, setShotLimit] = useState(SHOTS_INITIAL);
+  const [hero, setHero] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setHero(null);
+    if (!isApp) {
+      resolveCoverHires(game.name)
+        .then((u) => alive && setHero(u))
+        .catch(() => {});
+    }
+    return () => {
+      alive = false;
+    };
+  }, [game.name, isApp]);
+
   useEffect(() => {
     let alive = true;
     setSize(undefined);
     if (game.install_dir) {
-      dirSize(game.install_dir)
-        .then((s) => alive && setSize(s))
+      gameDirSize(game.id)
+        .then((s) => alive && setSize(s ?? null))
         .catch(() => alive && setSize(null));
     } else {
       setSize(null);
@@ -135,7 +190,9 @@ export function DetailView({
   }, [game.id]);
 
   const logo = game.cover_url ? null : game.icon ? coverSrc(game.icon) ?? null : null;
-  const cover = coverSrc(game.cover_url);
+  // Prefer the hi-res variant once it arrives; the grid's smaller file is what
+  // `cover_url` points at, and this is the one place it is rendered large.
+  const cover = coverSrc(hero ?? game.cover_url);
   // A user screenshot makes a richer backdrop than the cover; else fall back to it.
   const backdrop = (shots[0] ? coverSrc(shots[0]) : undefined) ?? cover;
   const meta = SOURCE_META[game.source];
@@ -232,7 +289,7 @@ export function DetailView({
               {game.install_dir && (
                 <IconBtn
                   title={t('menu.openFolder')}
-                  onClick={() => openPath(game.install_dir as string)}
+                  onClick={() => openGameFolder(game.id)}
                 >
                   <FolderIcon className="h-[18px] w-[18px]" />
                 </IconBtn>
@@ -309,7 +366,7 @@ export function DetailView({
                 <Section title={t('detail.myScreenshots')}>
                   {shots.length > 0 ? (
                     <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-                      {shots.map((s) => (
+                      {shots.slice(0, shotLimit).map((s) => (
                         <button
                           key={s}
                           onClick={() => setShot(s)}
@@ -320,6 +377,7 @@ export function DetailView({
                             src={coverSrc(s)}
                             alt=""
                             loading="lazy"
+                            decoding="async"
                             className="aspect-video w-full object-cover transition group-hover:scale-105"
                           />
                         </button>
@@ -327,6 +385,14 @@ export function DetailView({
                     </div>
                   ) : (
                     <p className="text-sm text-muted">{t('detail.noScreenshots')}</p>
+                  )}
+                  {shots.length > shotLimit && (
+                    <button
+                      onClick={() => setShotLimit(shots.length)}
+                      className="mt-4 border border-line px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated"
+                    >
+                      {t('detail.showAllScreenshots', { count: shots.length })}
+                    </button>
                   )}
                 </Section>
               </div>
@@ -337,42 +403,42 @@ export function DetailView({
               <div className="space-y-10">
                 <Section title={t('detail.communities')}>
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                    <a href={`https://www.pcgamingwiki.com/w/index.php?search=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    <ExternalLink href={`https://www.pcgamingwiki.com/w/index.php?search=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><GamepadIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">PCGamingWiki</div>
-                    </a>
-                    <a href={`https://www.nexusmods.com/search/?gsearch=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    </ExternalLink>
+                    <ExternalLink href={`https://www.nexusmods.com/search/?gsearch=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><GearIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">Nexus Mods</div>
-                    </a>
-                    <a href={`https://www.protondb.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    </ExternalLink>
+                    <ExternalLink href={`https://www.protondb.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><AppIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">ProtonDB</div>
-                    </a>
-                    <a href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' wiki fandom')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    </ExternalLink>
+                    <ExternalLink href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' wiki fandom')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><GlobeIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">Wiki / Fandom</div>
-                    </a>
-                    <a href={`https://www.youtube.com/results?search_query=${encodeURIComponent(game.name + ' gameplay')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    </ExternalLink>
+                    <ExternalLink href={`https://www.youtube.com/results?search_query=${encodeURIComponent(game.name + ' gameplay')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><YoutubeIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">YouTube (Gameplay)</div>
-                    </a>
-                    <a href={`https://www.twitch.tv/directory/search?term=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    </ExternalLink>
+                    <ExternalLink href={`https://www.twitch.tv/directory/search?term=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><TwitchIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">Twitch</div>
-                    </a>
-                    <a href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' subreddit')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    </ExternalLink>
+                    <ExternalLink href={`https://duckduckgo.com/?q=!ducky+${encodeURIComponent(game.name + ' subreddit')}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><RedditIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">Reddit</div>
-                    </a>
-                    <a href={`https://www.speedrun.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    </ExternalLink>
+                    <ExternalLink href={`https://www.speedrun.com/search?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><ZapIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">Speedrun.com</div>
-                    </a>
-                    <a href={`https://howlongtobeat.com/?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
+                    </ExternalLink>
+                    <ExternalLink href={`https://howlongtobeat.com/?q=${encodeURIComponent(game.name)}`} className="flex items-center gap-3 border border-line bg-elevated px-4 py-3 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated/80">
                       <div className="text-accent"><ClockIcon className="h-5 w-5" /></div>
                       <div className="min-w-0 flex-1 truncate font-medium">HowLongToBeat</div>
-                    </a>
+                    </ExternalLink>
                   </div>
                 </Section>
               </div>
@@ -393,7 +459,7 @@ export function DetailView({
                   </dl>
                   {game.install_dir && (
                     <button
-                      onClick={() => openPath(game.install_dir as string)}
+                      onClick={() => openGameFolder(game.id)}
                       className="mt-4 flex items-center gap-2 border border-line px-4 py-2 text-sm text-ink transition hover:border-accent/50 hover:bg-elevated"
                     >
                       <FolderIcon className="h-4 w-4 text-accent" />
