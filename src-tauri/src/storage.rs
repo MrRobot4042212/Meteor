@@ -200,13 +200,19 @@ pub fn set_type_override(app: &AppHandle, id: &str, kind: Option<&str>) -> Resul
 /// Global settings, falling back to defaults on a first run.
 pub fn load_settings(app: &AppHandle) -> AppSettings {
     match jsonstore::load::<AppSettings>(app, SETTINGS_FILE) {
-        Loaded::Present(settings) => settings,
+        Loaded::Present(mut settings) => {
+            // Read-time migration: no write here, so a settings file that is never
+            // saved again still stops stealing F9/F10/F11 from every application.
+            settings.shortcuts.migrate_legacy_defaults();
+            settings
+        }
         _ => AppSettings {
             setup_completed: false,
             minimize_to_tray: true,
             overlay: Default::default(),
             shortcuts: Default::default(),
             language: "system".to_string(),
+            discord_enabled: false,
         },
     }
 }

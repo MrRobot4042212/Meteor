@@ -11,7 +11,30 @@
 //! Everything is best-effort: if Discord isn't running or no id is set, it no-ops.
 
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// Whether the user opted in to Rich Presence (`AppSettings.discord_enabled`).
+///
+/// Off until the stored settings say otherwise: publishing the game you are
+/// playing to your entire friends list is not something to do without being
+/// asked. Kept as an atomic so the playtime watcher can check it per tick without
+/// reading the settings file.
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether Rich Presence is currently allowed to publish anything.
+pub fn enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Apply the user's preference. Turning it off drops the presence immediately
+/// rather than waiting for the watcher's next tick.
+pub fn set_enabled(value: bool) {
+    let was = ENABLED.swap(value, Ordering::Relaxed);
+    if was && !value {
+        clear();
+    }
+}
 
 /// Optional asset key uploaded to the Discord app's Rich Presence art; empty =
 /// no image shown.
@@ -45,6 +68,12 @@ static STATE: Mutex<State> = Mutex::new(State {
     next_attempt: None,
 });
 
+/// Lock the state without ever panicking: this is reached from the playtime
+/// watcher thread, and `panic = "abort"` would take the whole app down with it.
+fn state_lock() -> MutexGuard<'static, State> {
+    STATE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The id actually used: the user's override if set, else the embedded default.
 fn effective(s: &State) -> &str {
     if s.override_id.is_empty() {
@@ -57,7 +86,7 @@ fn effective(s: &State) -> &str {
 /// Set/replace the per-user override client id (from Ajustes or startup). Drops
 /// any open connection so the next presence update reconnects with the right id.
 pub fn set_client_id(id: &str) {
-    let mut s = STATE.lock().unwrap();
+    let mut s = state_lock();
     if s.override_id == id.trim() {
         return;
     }
@@ -128,7 +157,10 @@ fn ensure(s: &mut State) -> bool {
 /// Show "playing `name`" with an elapsed timer from `started_at` (unix secs).
 /// Returns true if it was sent (so the caller can avoid retrying).
 pub fn set_playing(name: &str, started_at: u64) -> bool {
-    let mut s = STATE.lock().unwrap();
+    if !enabled() {
+        return false;
+    }
+    let mut s = state_lock();
     if !ensure(&mut s) {
         return false;
     }
@@ -146,7 +178,12 @@ pub fn set_playing(name: &str, started_at: u64) -> bool {
                 .large_text("Meteor"),
         )
     };
-    let client = s.client.as_mut().unwrap();
+    // `ensure` returning true means the client is connected, but this runs on the
+    // playtime watcher thread and `panic = "abort"` turns any unwrap into a process
+    // kill, so the impossible case degrades instead of asserting.
+    let Some(client) = s.client.as_mut() else {
+        return false;
+    };
     if client.set_activity(act).is_ok() {
         true
     } else {
@@ -158,7 +195,7 @@ pub fn set_playing(name: &str, started_at: u64) -> bool {
 
 /// Clear the presence (no game running).
 pub fn clear() {
-    let mut s = STATE.lock().unwrap();
+    let mut s = state_lock();
     if let Some(client) = s.client.as_mut() {
         let _ = client.clear_activity();
     }

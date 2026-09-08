@@ -11,6 +11,30 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
 ## [No publicado] — Trabajo en curso
 
 ### Rendimiento
+- **Pulsar Jugar ya no congela la interfaz** (`playtime.rs`): el vigilante de
+  procesos mantenía tomado el cerrojo de "juegos lanzados desde Meteor" durante
+  todo su ciclo — una enumeración completa de procesos, la reescritura de
+  `playtime.json` con su volcado a disco y una llamada a Discord. `launch_game`
+  corre en el hilo principal y espera en ese mismo cerrojo, así que el clic se
+  quedaba detrás de todo eso, y con él la bandeja, los atajos globales y la
+  comunicación con la interfaz. Ahora el vigilante copia la lista y suelta el
+  cerrojo de inmediato.
+- **La rejilla de la biblioteca deja de reconstruirse por cosas que no le
+  incumben** (`page.tsx`, nuevo `LibraryGrid.tsx`): estaba escrita dentro del
+  componente que guarda ~25 estados sin relación entre sí, así que un aviso
+  emergente, arrastrar una tarjeta, abrir o cerrar el menú contextual o **cada
+  pulsación de tecla** en el buscador reconstruían un elemento por juego y
+  comparaban sus propiedades una a una. Con 1 000 juegos eso son 1 000 elementos
+  y 14 000 comparaciones por cada uno de esos eventos. Extraída y memoizada.
+- **Menos trabajo por fotograma leyendo los FPS** (`presentmon.rs`): el lector
+  reservaba memoria nueva por cada línea recibida, y se recibe una por fotograma
+  presentado — entre 200 y 800 veces por segundo durante toda la partida. Ahora
+  reutiliza un único búfer.
+- **Un corte de red ya no encadena esperas** (`igdb.rs`): la petición del token de
+  Twitch se hacía con el cerrojo tomado, así que con la red caída cada búsqueda
+  de carátula esperaba su turno para agotar su propio tiempo de espera, una
+  detrás de otra. Ahora la petición ocurre fuera del cerrojo y, si falla, se
+  pausan los intentos 30 segundos.
 - **Meteor en la bandeja ya no hace prácticamente nada** (`playtime.rs`,
   `metrics.rs`, `cputemp.rs`, `presentmon.rs`): los cuatro hilos que despertaban
   por temporizador ahora **se aparcan** hasta que hay algo que hacer. El watcher
@@ -317,7 +341,97 @@ y el proyecto usa versionado semántico aproximado. Las fechas son orientativas.
   mantienen** (`resolve_cover`), que es una llamada aparte. Resultado: al abrir un juego ya
   no se hace ninguna petición de ficha a IGDB ni a Google Translate.
 
+### Seguridad y privacidad
+- **El sidecar de temperatura ya no deja su driver de kernel cargado al cerrar
+  Meteor** (`sidecar/cputemp/Program.cs`, `cputemp.rs`, `lib.rs`).
+  LibreHardwareMonitor instala y arranca un driver de kernel para leer la
+  temperatura del procesador, y solo se descarga llamando a `Close()`. El sidecar
+  no tenía ningún camino de salida limpia: se le terminaba el proceso, lo que se
+  salta los finalizadores de .NET, así que **el driver seguía cargado y
+  registrado durante el resto del arranque de Windows** — y eso pasaba al cerrar
+  la app normalmente, no solo al fallar. Los drivers de esa familia permiten
+  lectura y escritura arbitraria de registros del procesador y de memoria física,
+  están en la lista de drivers vulnerables bloqueados por Microsoft, y varios
+  anti-cheat de kernel se niegan a arrancar el juego mientras uno esté cargado.
+  Ahora Meteor le cierra la entrada estándar, el sidecar lo detecta, descarga el
+  driver y sale; el Job Object queda solo como red de seguridad ante un cierre
+  brusco.
+- **La sesión ETW de PresentMon ya no queda huérfana** (`presentmon.rs`): una
+  sesión de trazas en tiempo real es un objeto del kernel que **sobrevive al
+  proceso que la creó**, así que terminar PresentMon la dejaba viva con sus
+  búferes reservados hasta reiniciar, y Windows solo admite un número limitado a
+  la vez. Ahora se para explícitamente por nombre. Además la sesión pasa a
+  llamarse `Meteor-PresentMon`: antes se usaba el nombre por defecto y la opción
+  de "parar la sesión existente" podía tumbar la de **otro programa** de captura
+  de FPS que estuvieras usando.
+- **Discord Rich Presence ya se puede desactivar, y viene desactivado**
+  (`models.rs`, `discord.rs`, `SettingsDialog.tsx`): publicaba a qué jugabas a
+  toda tu lista de amigos desde la primera ejecución, sin preguntar y **sin
+  ninguna forma de apagarlo** — la tarjeta de ajustes estaba comentada en el
+  código. Ahora es opcional y está en Ajustes → Aplicación, con el campo de
+  Application ID propio dentro.
+- **Los atajos globales ya no roban F9, F10 y F11 a todo el sistema**
+  (`models.rs`, `lib.rs`): un atajo global se queda la combinación para toda la
+  máquina, así que la ventana en primer plano deja de recibirla. Los valores por
+  defecto eran teclas sueltas: F9 es guardado rápido en muchísimos juegos, F10
+  abre el menú en cualquier aplicación de Windows y F11 es pantalla completa en
+  todos los navegadores. Los nuevos valores son `Ctrl+Shift+F9`, `Ctrl+Shift+F10`
+  y `Ctrl+Shift+F11`, y **si tenías los antiguos sin haberlos tocado, se migran
+  solos**; si los personalizaste, se respetan. Además, cuando otra aplicación ya
+  posee la combinación, el fallo se registra en vez de quedar en silencio.
+
 ### Corregido
+- **Las carátulas descargadas de IGDB salían rotas** (`igdb.rs`, `art.rs`): la
+  búsqueda devolvía una URL de imagen ya montada, pero quien la recibía la
+  guardaba en el campo del **identificador** de imagen y volvía a montar una URL
+  encima, así que el enlace final llevaba una dirección dentro de otra y no
+  cargaba nunca — y además quedaba cacheado así. De paso se ignoraba el tamaño
+  pedido y todo se resolvía siempre en la variante grande. Ahora la búsqueda
+  devuelve el identificador y la URL se compone en un solo sitio, con una
+  comprobación que rechaza cualquier cosa que no sea un identificador.
+- **Un fallo de red dejaba la biblioteca sin carátulas durante tres días**
+  (`igdb.rs`, `art.rs`): "IGDB no tiene este juego" y "no se ha podido preguntar
+  a IGDB" acababan en el mismo resultado vacío, que se guardaba como respuesta
+  válida y se respetaba durante tres días. Bastaba un escaneo sin conexión para
+  que la biblioteca se quedara sin arte hasta que caducara. Ahora se distinguen y
+  un fallo de conexión no escribe nada en la caché.
+- **«Vaciar caché de portadas» no volvía a descargar nada** (`useLibrary.ts`): la
+  lista de "ya resueltos" de la sesión solo crecía y nunca se limpiaba, así que
+  tras vaciar la caché no quedaba ninguna entrada pendiente y no se pedía ni una
+  carátula hasta reiniciar la aplicación. La única función cuyo propósito es
+  volver a bajar el arte no hacía nada.
+- **El cronómetro de juego y el HUD se enganchaban al proceso equivocado**
+  (`playtime.rs`): la comprobación de "este proceso pertenece al juego" comparaba
+  la ruta de instalación como prefijo de texto plano, sin frontera de separador,
+  así que una carpeta `C:\Juegos\Foo` reclamaba también todo lo que corriera bajo
+  `C:\Juegos\FooBar`. Con dos juegos de nombre parecido en la misma unidad, el
+  tiempo jugado, el HUD de métricas y PresentMon se ataban al juego vecino. Ahora
+  la ruta se compara sobre el separador y se tolera la barra final.
+- **Un ejecutable auxiliar podía ganarle al ejecutable real del juego**
+  (`playtime.rs`): las dos comprobaciones (ruta exacta del `.exe` y carpeta de
+  instalación) vivían en la misma pasada sobre la lista de procesos, así que
+  mandaba el **orden de enumeración** del sistema: un proceso cualquiera dentro
+  de la carpeta que apareciera antes le ganaba al `.exe` exacto. Ahora el
+  ejecutable conocido se busca primero en toda la lista.
+- **Los servicios anti-cheat se podían confundir con el juego** (`playtime.rs`):
+  las entradas de exclusión `easanticheat` y `battleye`/`be_service` no casaban
+  con los procesos que realmente se instalan (`EasyAntiCheat.exe`,
+  `BEService.exe`) y además solo se miraba el nombre del fichero, nunca la
+  carpeta. Ahora se compara la ruta completa relativa a la instalación, así que
+  `BattlEye\BEService.exe` y `EasyAntiCheat\EasyAntiCheat.exe` se descartan por
+  su carpeta. Efecto práctico: el HUD y el contador dejan de seguir al proceso
+  del anti-cheat en vez de al juego.
+- **Juegos legítimos desaparecían de la biblioteca** (`windows_apps.rs`): el
+  filtro de "entradas basura" del escaneo genérico del registro comparaba por
+  subcadena, así que cualquier título que contuviera una palabra vetada se caía
+  sin dejar rastro — *SteamWorld Dig 2* ("steam"), *Assassin's Creed Origins*
+  ("origin"), *Driver: San Francisco* ("driver"). Las copias instaladas desde una
+  tienda seguían apareciendo por su propio escáner, pero las instalaciones
+  DRM-free o independientes se perdían. Ahora el filtro va por niveles: nombre
+  completo para los clientes de tienda, fragmentos que solo existen en runtimes y
+  drivers, y palabras genéricas únicamente en nombres de una o dos palabras.
+  Puede que aparezca alguna entrada de sistema más que antes; ocultarla es un
+  clic, y un juego que falta no se ve.
 - **Overlay DirectComposition no iniciaba en GPUs AMD (HUD no aparecía)**: el swapchain
   de composición (`overlay_dcomp.rs`) se creaba con `Scaling: DXGI_SCALING_NONE`, que
   `CreateSwapChainForComposition` **rechaza** en muchos drivers (AMD incluido) con

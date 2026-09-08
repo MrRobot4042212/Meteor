@@ -1,3 +1,20 @@
+import type { ShortcutsSettings } from './types';
+
+/**
+ * The defaults, mirrored from `ShortcutsSettings` in `src-tauri/src/models.rs`.
+ *
+ * Every screen that shows a keybinding needs something to display until the real
+ * settings arrive over IPC; each of them used to carry its own copy, so changing a
+ * default in Rust left the UI announcing a shortcut that no longer existed. They
+ * are modified combinations on purpose — a bare key is taken away from every
+ * application on the machine, games included.
+ */
+export const DEFAULT_SHORTCUTS: ShortcutsSettings = {
+  spotlight: 'Ctrl+Shift+F9',
+  overlay_toggle: 'Ctrl+Shift+F10',
+  overlay_settings: 'Ctrl+Shift+F11',
+};
+
 /**
  * Turn a stored shortcut string (Tauri global-shortcut form, e.g.
  * "Control+Shift+KeyO", "F9", "Control+Shift+Space") into human-readable key

@@ -33,8 +33,10 @@ const HISTORY_MAX: usize = 500;
 /// Sessions shorter than this are ignored (a crash, a wrong-process match…).
 const MIN_SESSION_SECS: u64 = 30;
 
-/// Substrings of exe names that are never the game itself even when found under
-/// the install dir (crash handlers, redistributables, anti-cheat services…).
+/// Substrings of the path *relative to the install dir* that are never the game
+/// itself (crash handlers, redistributables, anti-cheat services…). Matching the
+/// relative path rather than the bare file name is what lets the directory name
+/// identify a service whose own name does not (`BattlEye\BEService.exe`).
 const EXCLUDE: &[&str] = &[
     "crashhandler",
     "crashpad",
@@ -49,9 +51,9 @@ const EXCLUDE: &[&str] = &[
     "setup",
     "installer",
     "uninstall",
-    "easanticheat",
+    "anticheat",
     "battleye",
-    "be_service",
+    "beservice",
 ];
 
 /// One finished play session.
@@ -167,10 +169,14 @@ pub fn reconcile(app: &AppHandle) {
 /// Registra que un juego fue lanzado a través de Meteor, para que sus métricas
 /// sean mostradas en el overlay.
 pub fn notify_launched(id: &str) {
-    if let Ok(mut list) = LAUNCHED_FROM_METEOR.lock() {
-        list.retain(|(i, _)| i != id);
-        list.push((id.to_string(), now()));
-    }
+    // Never skip the registration on a poisoned mutex: dropping it here would mean
+    // the game the user just launched is silently not tracked at all.
+    let mut list = LAUNCHED_FROM_METEOR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    list.retain(|(i, _)| i != id);
+    list.push((id.to_string(), now()));
+    drop(list);
     wake();
 }
 
@@ -289,28 +295,47 @@ fn running_processes() -> Vec<(u32, String)> {
     Vec::new()
 }
 
+/// Path of `path` relative to `dir`, or `None` when `path` is not inside `dir`.
+///
+/// The comparison lands on a path-separator boundary. A bare `starts_with` also
+/// accepts a sibling that merely shares a textual prefix, so an install dir of
+/// `C:\Games\Foo` used to claim every process under `C:\Games\FooBar`, and the
+/// playtime clock, the HUD and PresentMon all attached to the wrong game.
+/// Both arguments are expected to be lowercased already.
+fn relative_to_dir<'a>(path: &'a str, dir: &str) -> Option<&'a str> {
+    let dir = dir.trim_end_matches(['\\', '/']);
+    if dir.is_empty() {
+        return None;
+    }
+    path.strip_prefix(dir)?.strip_prefix(['\\', '/'])
+}
+
 /// PID of a running process belonging to this entry (for matching + the metrics
 /// overlay / PresentMon). `procs` is the `(pid, lowercased exe path)` list captured
 /// once per full scan; a `Some` result doubles as "this entry is running".
+///
+/// The known executable is matched across the whole list first. With both checks in
+/// a single pass, process enumeration order decided the winner: a loose install-dir
+/// hit early in the list beat the exact executable further down it.
 fn find_pid(procs: &[(u32, String)], install_dir: Option<&str>, exe: Option<&str>) -> Option<u32> {
-    let dir = install_dir.map(|s| s.to_lowercase());
-    let exe = exe.map(|s| s.to_lowercase());
-    for (pid, path) in procs {
-        if let Some(e) = &exe {
-            if path == e {
-                return Some(*pid);
-            }
-        }
-        if let Some(d) = &dir {
-            if !d.is_empty() && path.starts_with(d.as_str()) {
-                let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
-                if !EXCLUDE.iter().any(|x| name.contains(x)) {
-                    return Some(*pid);
-                }
-            }
+    if let Some(exe) = exe.map(|s| s.to_lowercase()).filter(|e| !e.is_empty()) {
+        if let Some((pid, _)) = procs.iter().find(|(_, path)| *path == exe) {
+            return Some(*pid);
         }
     }
-    None
+
+    let dir = install_dir.map(|s| s.to_lowercase())?;
+    procs
+        .iter()
+        .find(|(_, path)| {
+            // The whole relative path is tested, not just the file name: anti-cheat
+            // services and redistributables live in their own subdirectory
+            // (`BattlEye\BEService.exe`, `_CommonRedist\vc_redist.x64.exe`), and their
+            // file name on its own carries no hint of what they are.
+            relative_to_dir(path, &dir)
+                .is_some_and(|rest| !EXCLUDE.iter().any(|x| rest.contains(x)))
+        })
+        .map(|(pid, _)| *pid)
 }
 
 /// Whether a process with this PID is still alive, via a single cheap Win32 query, so
@@ -387,22 +412,30 @@ pub fn start(app: AppHandle) {
 
             // Mantenemos en la lista de "lanzados" a los juegos que sigan en progreso
             // o que hayan sido lanzados hace menos de 2 minutos (por si tardan en abrir).
-            let mut launched_list = LAUNCHED_FROM_METEOR
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            launched_list.retain(|(id, launch_ts)| {
-                active.contains_key(id) || ts.saturating_sub(*launch_ts) < 120
-            });
+            // Prune under the lock, then take a copy and release it immediately.
+            //
+            // `launch_game` runs on the main tao thread and blocks on this same mutex
+            // through `notify_launched`. Holding it for the rest of the tick meant a
+            // click on Play could wait behind a full process enumeration, a
+            // read-modify-write of playtime.json with its fsync, and a Discord IPC
+            // call — freezing IPC, the tray and the global shortcuts with it.
+            let launched: Vec<(String, u64)> = {
+                let mut launched_list = LAUNCHED_FROM_METEOR
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                launched_list.retain(|(id, launch_ts)| {
+                    active.contains_key(id) || ts.saturating_sub(*launch_ts) < 120
+                });
+                launched_list.clone()
+            };
+
             // A Meteor-launched game we haven't matched to a process yet → keep scanning
             // promptly until it shows up (don't wait for the slow full-scan cadence).
-            let pending_launch = launched_list
-                .iter()
-                .any(|(id, _)| !active.contains_key(id));
+            let pending_launch = launched.iter().any(|(id, _)| !active.contains_key(id));
 
             // Woken with nothing to do (e.g. the launch window expired): go back
             // to sleep instead of enumerating processes for nobody.
-            if active.is_empty() && launched_list.is_empty() {
-                drop(launched_list);
+            if active.is_empty() && launched.is_empty() {
                 continue;
             }
 
@@ -432,7 +465,7 @@ pub fn start(app: AppHandle) {
                 for e in &index {
                     // OPT-IN: only games that are active or were launched via Meteor.
                     let is_active = active.contains_key(&e.id);
-                    let was_launched = launched_list.iter().any(|(l_id, _)| l_id == &e.id);
+                    let was_launched = launched.iter().any(|(l_id, _)| l_id == &e.id);
                     if !is_active && !was_launched {
                         continue;
                     }
@@ -495,7 +528,7 @@ pub fn start(app: AppHandle) {
             // ONLY if it was launched from Meteor.
             let show_metrics_for = primary
                 .as_ref()
-                .filter(|id| launched_list.iter().any(|(l_id, _)| l_id == *id));
+                .filter(|id| launched.iter().any(|(l_id, _)| l_id == *id));
             let game_name = show_metrics_for
                 .and_then(|id| index.iter().find(|e| e.id == **id))
                 .map(|e| e.name.clone());
@@ -514,7 +547,15 @@ pub fn start(app: AppHandle) {
             }
             crate::metrics::set_current_game(game_name, game_pid);
 
-            if primary != presence {
+            if !crate::discord::enabled() {
+                // Opt-in only. Forgetting what we published means turning it back
+                // on republishes on the next tick instead of waiting for the next
+                // game change.
+                if presence.is_some() {
+                    crate::discord::clear();
+                    presence = None;
+                }
+            } else if primary != presence {
                 match &primary {
                     Some(id) => {
                         let name = index
@@ -537,8 +578,6 @@ pub fn start(app: AppHandle) {
                 }
             }
 
-            drop(launched_list);
-
             // Flush in-progress sessions for crash recovery.
             let snapshot: Vec<ActiveSession> = active
                 .iter()
@@ -551,4 +590,116 @@ pub fn start(app: AppHandle) {
             active_save(&app, &snapshot);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `procs` list shaped exactly like `running_processes` returns it:
+    /// `(pid, lowercased full executable path)`.
+    fn procs(entries: &[(u32, &str)]) -> Vec<(u32, String)> {
+        entries.iter().map(|(pid, path)| (*pid, path.to_lowercase())).collect()
+    }
+
+    #[test]
+    fn exact_executable_path_matches_regardless_of_case() {
+        let p = procs(&[(7, r"C:\Windows\explorer.exe"), (10, r"C:\Games\Foo\foo.exe")]);
+        assert_eq!(find_pid(&p, None, Some(r"C:\GAMES\Foo\FOO.exe")), Some(10));
+    }
+
+    #[test]
+    fn install_dir_prefix_matches_when_the_executable_is_unknown() {
+        let p = procs(&[(7, r"C:\Windows\explorer.exe"), (42, r"C:\Games\Foo\bin\foo.exe")]);
+        assert_eq!(find_pid(&p, Some(r"C:\Games\Foo"), None), Some(42));
+    }
+
+    #[test]
+    fn helper_processes_under_the_install_dir_are_excluded() {
+        let p = procs(&[
+            (11, r"C:\Games\Foo\UnityCrashHandler64.exe"),
+            (12, r"C:\Games\Foo\_CommonRedist\vc_redist.x64.exe"),
+            (13, r"C:\Games\Foo\dxsetup.exe"),
+            (14, r"C:\Games\Foo\bin\foo.exe"),
+        ]);
+        // The three helpers are skipped and the real executable wins.
+        assert_eq!(find_pid(&p, Some(r"C:\Games\Foo"), None), Some(14));
+    }
+
+    #[test]
+    fn anti_cheat_services_are_excluded_by_their_directory() {
+        // Neither file name says "anti-cheat"; the directory does, which is why the
+        // whole relative path is matched instead of just the file name.
+        let p = procs(&[
+            (11, r"C:\Games\Foo\EasyAntiCheat\EasyAntiCheat.exe"),
+            (12, r"C:\Games\Foo\BattlEye\BEService.exe"),
+            (13, r"C:\Games\Foo\bin\foo.exe"),
+        ]);
+        assert_eq!(find_pid(&p, Some(r"C:\Games\Foo"), None), Some(13));
+    }
+
+    #[test]
+    fn a_trailing_separator_on_the_install_dir_is_tolerated() {
+        let p = procs(&[(42, r"C:\Games\Foo\bin\foo.exe")]);
+        assert_eq!(find_pid(&p, Some(r"C:\Games\Foo\"), None), Some(42));
+    }
+
+    #[test]
+    fn the_install_dir_itself_is_not_a_match() {
+        // Only entries *inside* the directory count; the directory path on its own
+        // has no process behind it.
+        let p = procs(&[(42, r"C:\Games\Foo")]);
+        assert_eq!(find_pid(&p, Some(r"C:\Games\Foo"), None), None);
+    }
+
+    #[test]
+    fn an_empty_install_dir_never_matches() {
+        // Without the `is_empty` guard every running process would prefix-match "",
+        // so any game with no InstallLocation would look permanently running.
+        let p = procs(&[(7, r"C:\Windows\explorer.exe")]);
+        assert_eq!(find_pid(&p, Some(""), None), None);
+        assert_eq!(find_pid(&p, Some(""), Some("")), None);
+    }
+
+    #[test]
+    fn returns_none_when_nothing_matches() {
+        let p = procs(&[(7, r"C:\Windows\explorer.exe")]);
+        assert_eq!(find_pid(&p, Some(r"C:\Games\Foo"), Some(r"C:\Games\Foo\foo.exe")), None);
+        assert_eq!(find_pid(&[], Some(r"C:\Games\Foo"), Some(r"C:\Games\Foo\foo.exe")), None);
+    }
+
+    // --- Regression tests for the three matching defects fixed on 2026-09-08. ---
+
+    #[test]
+    fn a_sibling_directory_sharing_a_path_prefix_is_not_matched() {
+        // The old `path.starts_with(dir)` had no separator boundary, so an install
+        // dir of "C:\Games\Foo" claimed everything under "C:\Games\FooBar" and the
+        // playtime clock and HUD attached to a different game.
+        let p = procs(&[(99, r"C:\Games\FooBar\bin\foobar.exe")]);
+        assert_eq!(find_pid(&p, Some(r"C:\Games\Foo"), None), None);
+    }
+
+    #[test]
+    fn an_exact_executable_match_wins_over_an_earlier_install_dir_hit() {
+        // Both checks used to share one pass over the process list, so enumeration
+        // order decided: a loose directory hit first in the list beat the exact
+        // executable behind it.
+        let p = procs(&[
+            (20, r"C:\Games\Foo\bin\helper_ui.exe"),
+            (21, r"C:\Games\Foo\bin\foo.exe"),
+        ]);
+        assert_eq!(find_pid(&p, Some(r"C:\Games\Foo"), Some(r"C:\Games\Foo\bin\foo.exe")), Some(21));
+    }
+
+    #[test]
+    fn the_anti_cheat_exclusions_match_the_processes_that_actually_ship() {
+        // Both entries used to be dead: "easanticheat" never matched the shipped
+        // "EasyAntiCheat.exe" (the 'y' breaks the substring), and "battleye" was
+        // tested against the file name "BEService.exe" instead of the directory.
+        let eac = procs(&[(30, r"C:\Games\Foo\EasyAntiCheat\EasyAntiCheat.exe")]);
+        assert_eq!(find_pid(&eac, Some(r"C:\Games\Foo"), None), None);
+
+        let be = procs(&[(31, r"C:\Games\Foo\BattlEye\BEService.exe")]);
+        assert_eq!(find_pid(&be, Some(r"C:\Games\Foo"), None), None);
+    }
 }

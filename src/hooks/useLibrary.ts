@@ -169,9 +169,26 @@ export function useLibrary(autoScan: boolean) {
     }));
   }, [mockCount]);
 
+  /**
+   * Forget which entries have already been asked about, so the next pass asks
+   * again.
+   *
+   * `artDone` exists to stop a routine refresh re-asking the backend for art it
+   * already answered. It was only ever added to, which quietly broke the one
+   * feature whose entire purpose is re-downloading art: after "vaciar caché de
+   * portadas" every id was already in the set, so the pending list came out empty
+   * and not a single cover was fetched until the app restarted.
+   */
+  const resetArt = useCallback(() => {
+    artDone.current.clear();
+  }, []);
+
   const refresh = useCallback(
     async (showSplash = false) => {
       const myRun = ++runId.current;
+      // An explicit re-scan is a request to redo the work, not to reuse what this
+      // session happens to remember.
+      if (showSplash) artDone.current.clear();
       // Splash shows on the very first run, or whenever explicitly requested
       // (e.g. the "volver a escanear" button) so a re-scan feels like a reload.
       const splash = showSplash || !booted.current;
@@ -360,6 +377,7 @@ export function useLibrary(autoScan: boolean) {
     error,
     playtimes,
     refresh,
+    resetArt,
     silentRefresh,
     setGames,
     categoryMeta,

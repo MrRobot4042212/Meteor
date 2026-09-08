@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import { getAppSettings } from '@/lib/tauri';
-import { formatShortcut } from '@/lib/shortcuts';
+import { DEFAULT_SHORTCUTS, formatShortcut } from '@/lib/shortcuts';
 import type { ShortcutsSettings } from '@/lib/types';
 import {
   PlayIcon,
@@ -173,11 +173,7 @@ export function GuidedTour({
   // Keybindings shown in the tour must reflect the user's custom shortcuts (or
   // our default), so load them and format for display. Falls back to the current
   // defaults until settings arrive.
-  const [sc, setSc] = useState<ShortcutsSettings>({
-    spotlight: 'F9',
-    overlay_toggle: 'F10',
-    overlay_settings: 'F11',
-  });
+  const [sc, setSc] = useState<ShortcutsSettings>(DEFAULT_SHORTCUTS);
   useEffect(() => {
     getAppSettings()
       .then((s) => s.shortcuts && setSc(s.shortcuts))

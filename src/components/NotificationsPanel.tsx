@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CloseIcon, BookIcon } from './icons';
 import { getAppSettings, setAppSettings } from '@/lib/tauri';
-import { formatShortcut } from '@/lib/shortcuts';
+import { DEFAULT_SHORTCUTS, formatShortcut } from '@/lib/shortcuts';
 interface Tutorial {
   title: string;
   description: string;
@@ -15,7 +15,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Reflect the user's real Spotlight binding (custom or our default).
-  const [spotlight, setSpotlight] = useState('F9');
+  const [spotlight, setSpotlight] = useState(formatShortcut(DEFAULT_SHORTCUTS.spotlight).join('+'));
   useEffect(() => {
     getAppSettings()
       .then((s) => s.shortcuts?.spotlight && setSpotlight(formatShortcut(s.shortcuts.spotlight).join('+')))

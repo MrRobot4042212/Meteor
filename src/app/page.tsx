@@ -19,7 +19,7 @@ import {
 } from '@/lib/tauri';
 import type { Game, Category } from '@/lib/types';
 import { Sidebar, type Filter } from '@/components/Sidebar';
-import { GameCard } from '@/components/GameCard';
+import { LibraryGrid } from '@/components/LibraryGrid';
 import { ContextMenu, type MenuItem } from '@/components/ContextMenu';
 import { Splash } from '@/components/Splash';
 import { IntroSplash } from '@/components/IntroSplash';
@@ -123,6 +123,7 @@ function MainApp() {
     loading,
     error,
     refresh,
+    resetArt,
     setGames,
     categoryMeta,
     refreshCategories,
@@ -764,27 +765,21 @@ function MainApp() {
                     action={query ? undefined : { label: t('library.addApp'), onClick: () => setShowAdd(true) }}
                   />
                 ) : (
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-6">
-                    {visible.map((game, i) => (
-                      <GameCard
-                        key={game.id}
-                        game={game}
-                        index={i}
-                        onLaunch={handleLaunch}
-                        onRemove={game.source === 'manual' ? handleRemove : undefined}
-                        onHide={game.source === 'manual' ? undefined : handleHide}
-                        onEditCover={setEditingCover}
-                        onToggleFavorite={handleToggleFavorite}
-                        onEditCategories={setEditingCategories}
-                        onDragStateChange={setDragging}
-                        onOpen={handleOpen}
-                        onContextMenu={handleCardContextMenu}
-                        selectionMode={selectMode}
-                        selected={selectedIds.has(game.id)}
-                        onToggleSelect={toggleSelect}
-                      />
-                    ))}
-                  </div>
+                  <LibraryGrid
+                    games={visible}
+                    selectionMode={selectMode}
+                    selectedIds={selectedIds}
+                    onLaunch={handleLaunch}
+                    onRemove={handleRemove}
+                    onHide={handleHide}
+                    onEditCover={setEditingCover}
+                    onToggleFavorite={handleToggleFavorite}
+                    onEditCategories={setEditingCategories}
+                    onDragStateChange={setDragging}
+                    onOpen={handleOpen}
+                    onContextMenu={handleCardContextMenu}
+                    onToggleSelect={toggleSelect}
+                  />
                 )}
               </section>
             </>
@@ -817,6 +812,10 @@ function MainApp() {
           onClose={() => setShowSettings(false)}
           onChanged={() => {
             flash(t('toast.updatingLibrary'));
+            // Wiping the cover cache means the art has to be asked for again;
+            // without this the session's "already resolved" set makes the next
+            // pass skip every single entry.
+            resetArt();
             refresh();
           }}
           onStartTour={() => {
@@ -831,6 +830,8 @@ function MainApp() {
           onClose={() => setShowHiddenGames(false)}
           onChanged={() => {
             flash(t('toast.libraryUpdated'));
+            // Restored games were skipped by earlier cover passes.
+            resetArt();
             refresh(false);
           }}
         />

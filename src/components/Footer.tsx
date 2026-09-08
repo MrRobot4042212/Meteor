@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { getAppSettings } from '@/lib/tauri';
-import { formatShortcut } from '@/lib/shortcuts';
+import { DEFAULT_SHORTCUTS, formatShortcut } from '@/lib/shortcuts';
 
 /** A small key/badge chip. */
 function Kbd({ children }: { children: React.ReactNode }) {
@@ -31,7 +31,7 @@ function Shortcut({ keys, label }: { keys: React.ReactNode[]; label: string }) {
 /** Footer toolbar listing the app's keyboard/interaction shortcuts. */
 export function Footer() {
   const { t } = useTranslation();
-  const [spotlightShortcut, setSpotlightShortcut] = useState<string[]>(['F9']);
+  const [spotlightShortcut, setSpotlightShortcut] = useState<string[]>(formatShortcut(DEFAULT_SHORTCUTS.spotlight));
 
   useEffect(() => {
     const fetchSettings = async () => {

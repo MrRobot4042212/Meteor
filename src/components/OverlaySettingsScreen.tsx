@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import { getAppSettings, setAppSettings } from '@/lib/tauri';
 import type { OverlaySettings, OverlayPosition } from '@/lib/types';
-import { formatShortcut } from '@/lib/shortcuts';
+import { DEFAULT_SHORTCUTS, formatShortcut } from '@/lib/shortcuts';
 import { CloseIcon } from './icons';
 import { OverlayMpoPanel } from './OverlayMpoPanel';
 
@@ -30,7 +30,7 @@ export function OverlaySettingsScreen({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const [overlay, setOverlay] = useState<OverlaySettings | null>(null);
   // Shortcut that returns to the game (overlay settings toggle); custom or default.
-  const [settingsKey, setSettingsKey] = useState('F11');
+  const [settingsKey, setSettingsKey] = useState(formatShortcut(DEFAULT_SHORTCUTS.overlay_settings).join('+'));
 
   useEffect(() => {
     getAppSettings()

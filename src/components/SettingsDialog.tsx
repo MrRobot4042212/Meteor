@@ -18,7 +18,7 @@ import {
 } from '@/lib/tauri';
 import type { OverlaySettings, OverlayPosition, SystemInfo, MetricsSample, ShortcutsSettings } from '@/lib/types';
 import { CloseIcon, InfoIcon, GearIcon, FireIcon } from './icons';
-import { formatShortcut } from '@/lib/shortcuts';
+import { DEFAULT_SHORTCUTS, formatShortcut } from '@/lib/shortcuts';
 import { OverlayPanel } from './Overlay';
 import { OverlayMpoPanel } from './OverlayMpoPanel';
 
@@ -87,6 +87,7 @@ export function SettingsDialog({
   const [hidden, setHidden] = useState<number | null>(null);
   const [discordId, setDiscordId] = useState('');
   const [discordSaved, setDiscordSaved] = useState(false);
+  const [discordEnabled, setDiscordEnabled] = useState<boolean | null>(null);
   const [autostart, setAutostartState] = useState<boolean | null>(null);
   const [tray, setTray] = useState<boolean | null>(null);
   const [overlay, setOverlay] = useState<OverlaySettings | null>(null);
@@ -122,6 +123,7 @@ export function SettingsDialog({
         setOverlay(s.overlay);
         setShortcuts(s.shortcuts);
         setLanguageState(s.language ?? 'system');
+        setDiscordEnabled(s.discord_enabled ?? false);
       })
       .catch(() => setTray(null));
   }, []);
@@ -192,6 +194,19 @@ export function SettingsDialog({
       await setAppSettings({ ...current, minimize_to_tray: next });
     } catch (e) {
       setTray(!next); // revert
+      setError(String(e));
+    }
+  }
+
+  async function toggleDiscord() {
+    if (discordEnabled === null) return;
+    const next = !discordEnabled;
+    setDiscordEnabled(next); // optimistic
+    try {
+      const current = await getAppSettings();
+      await setAppSettings({ ...current, discord_enabled: next });
+    } catch (e) {
+      setDiscordEnabled(!next); // revert
       setError(String(e));
     }
   }
@@ -309,8 +324,10 @@ export function SettingsDialog({
                 updateShortcuts={updateShortcuts}
                 discordId={discordId}
                 discordSaved={discordSaved}
+                discordEnabled={discordEnabled}
                 setDiscordId={setDiscordId}
                 saveDiscord={saveDiscord}
+                toggleDiscord={toggleDiscord}
                 clear={clear}
                 restore={restore}
                 toggleAutostart={toggleAutostart}
@@ -357,7 +374,7 @@ function MetricsTab({
   shortcuts: ShortcutsSettings | null;
 }) {
   const { t } = useTranslation();
-  const toggleKey = formatShortcut(shortcuts?.overlay_toggle).join('+') || 'F10';
+  const toggleKey = formatShortcut(shortcuts?.overlay_toggle ?? DEFAULT_SHORTCUTS.overlay_toggle).join('+');
   // Admin is only actually needed for CPU temp (and NVIDIA FPS via PresentMon).
   const needsAdmin = !!overlay?.show_cpu_temp;
   return (
@@ -642,6 +659,12 @@ function AppTab({
   tray,
   shortcuts,
   updateShortcuts,
+  discordId,
+  discordSaved,
+  discordEnabled,
+  setDiscordId,
+  saveDiscord,
+  toggleDiscord,
   clear,
   restore,
   toggleAutostart,
@@ -658,8 +681,10 @@ function AppTab({
   updateShortcuts: (patch: Partial<ShortcutsSettings>) => void;
   discordId: string;
   discordSaved: boolean;
+  discordEnabled: boolean | null;
   setDiscordId: (v: string) => void;
   saveDiscord: () => void;
+  toggleDiscord: () => void;
   clear: () => void;
   restore: () => void;
   toggleAutostart: () => void;
@@ -768,23 +793,33 @@ function AppTab({
           </Card>
         )}
 
-{/*         <Card title="Discord Rich Presence">
-          <p className="mb-3 text-xs leading-relaxed text-muted">
-            Opcional: usa tu propio Application ID de Discord. Déjalo vacío para usar el
-            de Meteor.
-          </p>
-          <div className="flex gap-2">
-            <input
-              value={discordId}
-              onChange={(e) => setDiscordId(e.target.value)}
-              placeholder="Client ID (opcional)"
-              className="flex-1 border border-line bg-elevated px-3 py-2 text-sm text-ink outline-none focus:border-accent"
-            />
-            <Button onClick={saveDiscord} disabled={busy} className="w-auto px-4">
-              {discordSaved ? 'Guardado ✓' : 'Guardar'}
-            </Button>
-          </div>
-        </Card> */}
+        {discordEnabled !== null && (
+        <Card
+          title={t('settings.aDiscord')}
+          control={<Toggle on={discordEnabled} onClick={toggleDiscord} />}
+        >
+          <p className="text-xs leading-relaxed text-muted">{t('settings.aDiscordBody')}</p>
+          {discordEnabled && (
+            <div className="mt-3">
+              <p className="mb-2 text-xs leading-relaxed text-muted">
+                {t('settings.aDiscordIdBody')}
+              </p>
+              <div className="flex gap-2">
+                <input
+                  value={discordId}
+                  onChange={(e) => setDiscordId(e.target.value)}
+                  placeholder={t('settings.aDiscordIdPlaceholder')}
+                  aria-label={t('settings.aDiscordIdPlaceholder')}
+                  className="flex-1 border border-line bg-elevated px-3 py-2 text-sm text-ink outline-none focus:border-accent"
+                />
+                <Button onClick={saveDiscord} disabled={busy} className="w-auto px-4">
+                  {discordSaved ? t('settings.aDiscordSaved') : t('common.save')}
+                </Button>
+              </div>
+            </div>
+          )}
+        </Card>
+        )}
       </div>
     </div>
   );

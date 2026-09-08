@@ -75,6 +75,10 @@ windows = { version = "0.61", features = [
     # Kill-on-close Job Object for the metrics sidecars (see jobobj.rs), so an
     # elevated PresentMon/cputemp can never outlive Meteor.
     "Win32_System_JobObjects",
+    # Stop PresentMon's ETW realtime session by name (ControlTraceW). The session is
+    # a kernel object that outlives the process that created it, so terminating
+    # PresentMon is not enough to release it — see presentmon.rs.
+    "Win32_System_Diagnostics_Etw",
     # Cheap global CPU%/RAM for the metrics sampler (GetSystemTimes /
     # GlobalMemoryStatusEx) plus the CPU/RAM description for the system panel.
     "Win32_System_SystemInformation",

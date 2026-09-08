@@ -116,6 +116,15 @@ fn image_url(image_id: &str, variant: &str) -> String {
     format!("https://images.igdb.com/igdb/image/upload/{variant}/{image_id}.jpg")
 }
 
+/// An IGDB image id is an opaque slug (`co1r76`), never a path or a URL.
+///
+/// Guards the one place a value enters the cache's `image_id` field: a full URL
+/// stored there composes into `…/upload/t_cover_big/https://…jpg.jpg`, which is
+/// how every freshly resolved IGDB cover ended up with a broken link.
+fn is_valid_image_id(s: &str) -> bool {
+    !s.is_empty() && !s.contains('/') && !s.contains(':') && !s.contains('.')
+}
+
 /// Extract the image id out of a v1 cached URL.
 fn image_id_from_url(url: &str) -> String {
     url.rsplit('/')
@@ -179,9 +188,25 @@ fn resolve_variant(app: &AppHandle, name: &str, variant: &str) -> Option<String>
         // A recent miss: don't ask again until the negative TTL expires.
         Some(entry) if !is_stale(entry.ts) => return None,
         _ => {
-            // 3. Ask IGDB once and remember the result (id or miss).
+            // 3. Ask IGDB once and remember the result — but only when IGDB
+            //    actually answered. A network failure used to be stored as an empty
+            //    entry and honoured as "this game has no cover" for the whole
+            //    negative TTL, so one offline scan blanked the library for days.
             let variants = name_variants(name);
-            let resolved = igdb::resolve_cover(&variants).unwrap_or_default();
+            let resolved = match igdb::resolve_cover(&variants) {
+                igdb::Lookup::Found(id) if is_valid_image_id(&id) => id,
+                igdb::Lookup::Found(bad) => {
+                    // Never cache something that is not an id: it would compose
+                    // into a malformed image URL and stay wrong until the cache is
+                    // wiped by hand.
+                    eprintln!("[art] ignoring malformed IGDB image id: {bad}");
+                    return None;
+                }
+                // Could not ask: leave the cache untouched so the next attempt
+                // retries instead of inheriting a fabricated miss.
+                igdb::Lookup::Unavailable => return None,
+                igdb::Lookup::NotFound => String::new(),
+            };
             if let Ok(mut cache) = cache(app).write() {
                 cache.insert(
                     key.clone(),
@@ -444,6 +469,27 @@ pub fn prune_covers(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_url_is_never_accepted_as_an_image_id() {
+        // Regression: `igdb::resolve_cover` used to return a composed
+        // `t_cover_big_2x` URL, which was stored in the cache's `image_id` field
+        // and fed back into `image_url`, producing a URL nested inside a URL.
+        assert!(!is_valid_image_id(
+            "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co1r76.jpg"
+        ));
+        assert!(!is_valid_image_id("t_cover_big/co1r76"));
+        assert!(!is_valid_image_id("co1r76.jpg"));
+        assert!(!is_valid_image_id(""));
+        assert!(is_valid_image_id("co1r76"));
+    }
+
+    #[test]
+    fn a_valid_image_id_composes_a_url_it_can_be_read_back_from() {
+        let url = image_url("co1r76", VARIANT_GRID);
+        assert_eq!(url, format!("https://images.igdb.com/igdb/image/upload/{VARIANT_GRID}/co1r76.jpg"));
+        assert_eq!(image_id_from_url(&url), "co1r76");
+    }
 
     #[test]
     fn cache_key_is_stable_across_builds() {

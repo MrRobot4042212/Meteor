@@ -115,6 +115,11 @@ export interface AppSettings {
   shortcuts: ShortcutsSettings;
   /** UI language: "system" (follow OS, fallback English), "es" or "en". */
   language: string;
+  /**
+   * Publish the game being played to Discord Rich Presence. Opt-in: this
+   * broadcasts what you are playing to your whole friends list.
+   */
+  discord_enabled: boolean;
 }
 
 /** A GPU as reported by `system_info`. `key` is set only for metric-capable GPUs. */

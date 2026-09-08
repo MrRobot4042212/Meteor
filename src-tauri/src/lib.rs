@@ -678,6 +678,7 @@ fn set_app_settings(
     storage::save_settings(&app, &settings);
     *state.lock().unwrap() = settings.clone();
     apply_overlay_settings(&app, &settings);
+    discord::set_enabled(settings.discord_enabled);
     // This command now runs on the async pool (it writes to disk), but the
     // global-shortcut registration is a window-manager operation: keep it on the
     // main thread.
@@ -707,14 +708,28 @@ fn parse_shortcut(s: &str) -> Option<tauri_plugin_global_shortcut::Shortcut> {
 fn register_shortcuts(app: &AppHandle, shortcuts: &crate::models::ShortcutsSettings) {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
     let _ = app.global_shortcut().unregister_all();
-    if let Some(s) = parse_shortcut(&shortcuts.spotlight) {
-        let _ = app.global_shortcut().register(s);
-    }
-    if let Some(s) = parse_shortcut(&shortcuts.overlay_toggle) {
-        let _ = app.global_shortcut().register(s);
-    }
-    if let Some(s) = parse_shortcut(&shortcuts.overlay_settings) {
-        let _ = app.global_shortcut().register(s);
+
+    // A global shortcut is a machine-wide claim on a key combination: `RegisterHotKey`
+    // consumes the keystroke, so the foreground window (a game included) never sees
+    // it. Registration also fails when another application already owns the combo —
+    // which used to be swallowed, leaving a shortcut that silently never worked.
+    for (what, combo) in [
+        ("spotlight", &shortcuts.spotlight),
+        ("overlay_toggle", &shortcuts.overlay_toggle),
+        ("overlay_settings", &shortcuts.overlay_settings),
+    ] {
+        if combo.trim().is_empty() {
+            continue;
+        }
+        let Some(parsed) = parse_shortcut(combo) else {
+            eprintln!("[shortcuts] {what}: '{combo}' is not a valid combination; not registered");
+            continue;
+        };
+        if let Err(e) = app.global_shortcut().register(parsed) {
+            eprintln!(
+                "[shortcuts] {what}: could not register '{combo}' (another application may own it): {e}"
+            );
+        }
     }
 }
 
@@ -1058,8 +1073,10 @@ pub fn run() {
             // Close any play sessions left dangling by a previous crash/force-quit,
             // then start the global watcher that times games however they launch.
             playtime::reconcile(&handle);
-            // Load the saved Discord client id so the watcher can set Rich Presence.
+            // Load the saved Discord client id so the watcher can set Rich Presence,
+            // and the opt-in flag that decides whether it may publish at all.
             discord::set_client_id(&storage::load_discord_client_id(&handle));
+            discord::set_enabled(storage::load_settings(&handle).discord_enabled);
             // Start the metrics sampler (idle until the overlay is on and a game runs),
             // the PresentMon controller (idle until FPS is wanted + a game runs) and the
             // CPU-temp sidecar controller (idle until CPU temp is wanted + a game runs).
@@ -1163,10 +1180,19 @@ pub fn run() {
                 // The URL cache is written at most every 2 s during a cover pass;
                 // make sure the last entries are not lost on a clean exit.
                 crate::art::flush(app_handle);
+
+                // Stop the sidecars properly before the Job Object gets to them.
+                // Termination is not a shutdown for either of these: cputemp would
+                // leave the LibreHardwareMonitor kernel driver loaded and registered
+                // for the rest of the boot, and PresentMon would leave its ETW
+                // realtime session live with its buffers pinned until reboot. The
+                // kill-on-close job (`jobobj.rs`) stays as the crash backstop, which
+                // is all it can be — TerminateProcess cannot be intercepted.
+                #[cfg(windows)]
+                {
+                    crate::presentmon::shutdown();
+                    crate::cputemp::shutdown();
+                }
             }
-            // Sidecar cleanup is handled by the kill-on-close Job Object
-            // (`jobobj.rs`): the kernel terminates PresentMon/cputemp when our
-            // process goes away, including on a crash or force-quit, which the
-            // old `taskkill /F /PID` on RunEvent::Exit could not.
         });
 }

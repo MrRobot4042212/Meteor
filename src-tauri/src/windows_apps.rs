@@ -128,26 +128,57 @@ fn classify(
 /// themselves (we want their games, not the client entry). Apps the user might
 /// actually want (browsers, office, dev tools…) are NOT dropped here — they are
 /// surfaced and tagged `GameSource::App` by `classify`/`is_app`.
+///
+/// Matching is deliberately tiered. A single substring blocklist silently ate real
+/// titles — "SteamWorld Dig 2" ("steam"), "Assassin's Creed Origins" ("origin"),
+/// "Driver: San Francisco" ("driver") — and a missing game is an invisible failure,
+/// while a surviving junk entry is one the user can hide in two clicks. The bias is
+/// therefore towards keeping.
 #[cfg(windows)]
 fn is_junk(name: &str, publisher: &str) -> bool {
-    let n = name.to_lowercase();
+    let n = name.trim().to_lowercase();
     let p = publisher.to_lowercase();
 
-    const NAME_BLOCK: &[&str] = &[
-        "redistributable", "redist", "directx", "vcredist", "visual c++", ".net",
-        "dotnet", "framework", " sdk", "runtime", "driver", "geforce", "nvidia",
-        "radeon", "vulkan", "update for", "hotfix", "service pack", "python",
-        "java(tm)", "java se", "microsoft edge", "webview2", "onedrive",
-        "windows software", "debugging tools", "setup", "installer", "uninstall",
-        "maintenance service", "update health", "google update", "active directory",
-        // Launcher clients (their games are separate entries / native scanners).
-        "steam", "epic games launcher", "gog galaxy", "ea app", "ea desktop",
-        "origin", "ubisoft connect", "uplay", "battle.net", "riot client",
-        "rockstar games launcher", "amazon games", "discord", "overwolf",
-        "playnite", "geforce now", "meteor","blender","7-zip","microsoft visual c++",
-        "wallpaper engine","youtube"
+    // Tier 1 — matched against the WHOLE cleaned name. Launcher clients (we want
+    // their games, not the client entry) and apps deliberately kept out of the
+    // library. `clean_name` has already stripped version/arch tails, so "7-Zip
+    // 24.09 (x64)" arrives here as "7-zip".
+    const EXACT_BLOCK: &[&str] = &[
+        "steam", "steam client", "epic games launcher", "gog galaxy", "ea app",
+        "ea desktop", "origin", "ubisoft connect", "uplay", "battle.net",
+        "riot client", "rockstar games launcher", "amazon games", "discord",
+        "overwolf", "playnite", "geforce now", "meteor", "blender", "7-zip",
+        "wallpaper engine", "youtube",
     ];
-    if NAME_BLOCK.iter().any(|b| n.contains(b)) {
+    if EXACT_BLOCK.contains(&n.as_str()) {
+        return true;
+    }
+
+    // Tier 2 — fragments that do not occur in the name of anything launchable.
+    const FRAGMENT_BLOCK: &[&str] = &[
+        "redistributable", "redist", "vcredist", "visual c++", "directx", "vulkan",
+        "webview2", "microsoft edge", "onedrive", "dotnet", ".net framework",
+        ".net runtime", ".net core", ".net sdk", "java(tm)", "java se",
+        "windows software", "debugging tools", "maintenance service",
+        "update health", "google update", "active directory", "service pack",
+        "hotfix", "update for", "geforce experience", "radeon software",
+        "python launcher",
+    ];
+    if FRAGMENT_BLOCK.iter().any(|b| n.contains(b)) {
+        return true;
+    }
+
+    // Tier 3 — generic words that DO appear in real titles, so they only count on a
+    // short vendor-style name of at most two words. "Driver: San Francisco" and
+    // "Setup Wizard Deluxe Adventure" survive; "Audio Driver" and "Java Runtime"
+    // do not. Longer vendor entries are caught by the publisher list below.
+    const SHORT_NAME_WORD_BLOCK: &[&str] = &[
+        "driver", "drivers", "setup", "installer", "uninstall", "runtime",
+        "framework", "sdk", "python", "java", "nvidia", "geforce", "radeon",
+    ];
+    if n.split_whitespace().count() <= 2
+        && SHORT_NAME_WORD_BLOCK.iter().any(|b| contains_word(&n, b))
+    {
         return true;
     }
 
@@ -158,6 +189,28 @@ fn is_junk(name: &str, publisher: &str) -> bool {
         "python software foundation",
     ];
     PUB_BLOCK.iter().any(|b| p.contains(b))
+}
+
+/// `haystack.contains(word)` restricted to alphanumeric boundaries, so "driver"
+/// matches "audio driver" but not "drivereasy", and "steam" does not match
+/// "steamworld". Both arguments are expected to be lowercased.
+#[cfg(windows)]
+fn contains_word(haystack: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let mut from = 0;
+    while let Some(hit) = haystack[from..].find(word) {
+        let start = from + hit;
+        let end = start + word.len();
+        let before_ok = !haystack[..start].chars().next_back().is_some_and(char::is_alphanumeric);
+        let after_ok = !haystack[end..].chars().next().is_some_and(char::is_alphanumeric);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
 }
 
 /// Strip version/architecture noise from a registry `DisplayName`, leaving the
@@ -284,3 +337,109 @@ pub fn scan() -> Result<Vec<Game>, String> {
     Ok(Vec::new())
 }
 
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_version_and_arch_tails() {
+        assert_eq!(clean_name("OBS Studio 30.0.2"), "OBS Studio");
+        assert_eq!(clean_name("Git version 2.43.0"), "Git");
+        assert_eq!(clean_name("Foo v1.2"), "Foo");
+        assert_eq!(clean_name("Foo x64"), "Foo");
+        assert_eq!(clean_name("Foo 64-bit"), "Foo");
+        // Trailing separators left behind by the strip are trimmed too.
+        assert_eq!(clean_name("Foo - v1.0"), "Foo");
+    }
+
+    #[test]
+    fn keeps_meaningful_numbers_without_a_dot() {
+        assert_eq!(clean_name("Office 365"), "Office 365");
+        assert_eq!(clean_name("Visual Studio 2022"), "Visual Studio 2022");
+        assert_eq!(clean_name("Half-Life 2"), "Half-Life 2");
+    }
+
+    #[test]
+    fn drops_noisy_brackets_but_keeps_descriptive_ones() {
+        assert_eq!(clean_name("7-Zip (x64)"), "7-Zip");
+        assert_eq!(clean_name("Foo (64-bit)"), "Foo");
+        assert_eq!(clean_name("Foo [1.2.3]"), "Foo");
+        assert_eq!(clean_name("Foo (Beta)"), "Foo (Beta)");
+    }
+
+    #[test]
+    fn an_unmatched_bracket_keeps_its_text_instead_of_losing_it() {
+        assert_eq!(clean_name("Foo (x64"), "Foo (x64");
+    }
+
+    #[test]
+    fn blocks_runtimes_drivers_and_system_tooling_by_name() {
+        assert!(is_junk("Microsoft Visual C++ 2015 Redistributable", ""));
+        assert!(is_junk("NVIDIA GeForce Experience", ""));
+        assert!(is_junk("Java(TM) SE Development Kit", ""));
+        assert!(is_junk("Windows Software Development Kit", ""));
+        assert!(is_junk("Microsoft Edge WebView2 Runtime", ""));
+    }
+
+    #[test]
+    fn blocks_store_launcher_clients_so_only_their_games_remain() {
+        assert!(is_junk("Steam", ""));
+        assert!(is_junk("Ubisoft Connect", ""));
+        assert!(is_junk("EA app", ""));
+        assert!(is_junk("Battle.net", ""));
+        assert!(is_junk("GOG Galaxy", ""));
+    }
+
+    #[test]
+    fn blocks_hardware_and_runtime_vendors_by_publisher() {
+        assert!(is_junk("Some Control Panel", "NVIDIA Corporation"));
+        assert!(is_junk("Some Audio Tool", "Realtek Semiconductor Corp."));
+        assert!(is_junk("Some Utility", "Advanced Micro Devices, Inc."));
+        assert!(is_junk("Some Tool", "Python Software Foundation"));
+    }
+
+    #[test]
+    fn keeps_consumer_apps_and_ordinary_games() {
+        // Consumer-app publishers are deliberately not blocked; `classify` tags
+        // these as GameSource::App instead of dropping them.
+        assert!(!is_junk("Google Chrome", "Google LLC"));
+        assert!(!is_junk("Adobe Photoshop", "Adobe Inc."));
+        assert!(!is_junk("Hollow Knight", "Team Cherry"));
+        assert!(!is_junk("Cyberpunk 2077", "CD PROJEKT RED"));
+    }
+
+    // --- Regression tests for the substring-blocklist defect fixed on 2026-09-08. ---
+
+    #[test]
+    fn real_titles_containing_a_blocked_word_survive() {
+        // Every one of these was dropped by the old plain-substring blocklist. A
+        // missing game is an invisible failure; a junk entry that survives is one
+        // click to hide, so the matching is biased towards keeping.
+        assert!(!is_junk("Driver: San Francisco", "Ubisoft"));
+        assert!(!is_junk("SteamWorld Dig 2", "Image & Form"));
+        assert!(!is_junk("Assassin's Creed Origins", "Ubisoft"));
+        assert!(!is_junk("Discordia", "Indie Dev"));
+        assert!(!is_junk("Deus Ex: Human Revolution", "Eidos"));
+    }
+
+    #[test]
+    fn short_vendor_style_names_are_still_blocked_by_a_generic_word() {
+        // The same words stay lethal on a one- or two-word name, which is what
+        // registry junk actually looks like.
+        assert!(is_junk("Audio Driver", ""));
+        assert!(is_junk("Realtek Drivers", ""));
+        assert!(is_junk("Java Runtime", ""));
+        assert!(is_junk("Python 3.12", ""));
+    }
+
+    #[test]
+    fn word_matching_respects_alphanumeric_boundaries() {
+        assert!(contains_word("audio driver", "driver"));
+        assert!(contains_word("driver: san francisco", "driver"));
+        assert!(!contains_word("drivereasy", "driver"));
+        assert!(!contains_word("steamworld", "steam"));
+        assert!(!contains_word("", "steam"));
+        assert!(!contains_word("steam", ""));
+    }
+}

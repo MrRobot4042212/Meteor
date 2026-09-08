@@ -1,6 +1,6 @@
 use serde::Deserialize;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // IGDB (Twitch) app credentials. **Build-time environment only**: they are read
 // from `IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET` when the binary is compiled (CI
@@ -62,14 +62,41 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// How long to stop hammering Twitch after a failed token request. Without it,
+/// every pending cover lookup retries the fetch, each paying the full connect
+/// timeout, whenever the network is down.
+const TOKEN_RETRY_BACKOFF: Duration = Duration::from_secs(30);
+static TOKEN_RETRY_AFTER: Mutex<Option<Instant>> = Mutex::new(None);
+
 /// Get a valid Twitch app token, reusing the cached one when possible.
+///
+/// The HTTP request deliberately happens **outside** the `TOKEN` lock. Holding it
+/// across the call turned the mutex into a serializer on the failure path: with
+/// Twitch unreachable, N concurrent cover lookups queued up and each paid its own
+/// 6 s connect timeout in turn, one after another, every one of them occupying an
+/// async-runtime worker while it waited.
 fn token() -> Option<String> {
     let (client_id, client_secret) = credentials()?;
-    let mut guard = TOKEN.lock().ok()?;
-    if let Some(tok) = guard.as_ref() {
-        // 60s safety margin so a token doesn't expire mid-request.
-        if now() + 60 < tok.expires_at {
-            return Some(tok.value.clone());
+
+    {
+        let guard = TOKEN.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tok) = guard.as_ref() {
+            // 60s safety margin so a token doesn't expire mid-request.
+            if now() + 60 < tok.expires_at {
+                return Some(tok.value.clone());
+            }
+        }
+    }
+
+    {
+        let mut retry = TOKEN_RETRY_AFTER
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match *retry {
+            Some(at) if Instant::now() < at => return None,
+            // The window elapsed: clear it so exactly this caller retries.
+            Some(_) => *retry = None,
+            None => {}
         }
     }
 
@@ -79,26 +106,59 @@ fn token() -> Option<String> {
         expires_in: u64,
     }
 
-    let resp: TokenResp = agent()
+    let fetched: Option<TokenResp> = agent()
         .post("https://id.twitch.tv/oauth2/token")
         .query("client_id", client_id)
         .query("client_secret", client_secret)
         .query("grant_type", "client_credentials")
         .call()
-        .ok()?
-        .into_json()
-        .ok()?;
+        .ok()
+        .and_then(|r| r.into_json().ok());
+
+    let Some(resp) = fetched else {
+        *TOKEN_RETRY_AFTER
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now() + TOKEN_RETRY_BACKOFF);
+        eprintln!("[igdb] token request failed; pausing cover lookups for {TOKEN_RETRY_BACKOFF:?}");
+        return None;
+    };
 
     let value = resp.access_token;
-    *guard = Some(Token {
+    *TOKEN.lock().unwrap_or_else(PoisonError::into_inner) = Some(Token {
         value: value.clone(),
         expires_at: now() + resp.expires_in,
     });
     Some(value)
 }
 
+/// Outcome of a cover lookup.
+///
+/// "IGDB has nothing for this game" and "we could not ask IGDB" are different
+/// facts with different lifetimes: the first is worth remembering for days, the
+/// second must never be written to the cache at all. Collapsing both into an
+/// empty string is what let a single offline library scan poison every cover for
+/// the full negative TTL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lookup {
+    /// IGDB answered with cover art. Carries the **image id**, not a URL: the
+    /// caller composes the URL for the size variant it wants.
+    Found(String),
+    /// IGDB answered and has no cover for any of the name variants.
+    NotFound,
+    /// The lookup could not be performed (no credentials in this build, no token,
+    /// network failure). Nothing may be cached from this.
+    Unavailable,
+}
+
 /// Resolve a vertical cover via IGDB for any of the given name variants.
-pub fn resolve_cover(variants: &[String]) -> Option<String> {
+///
+/// Returns the IGDB **image id**. It used to return a fully composed
+/// `t_cover_big_2x` URL, which the caller then stored in its `image_id` field and
+/// fed back into its own URL builder — composing a URL *inside* a URL, so every
+/// freshly resolved cover produced a malformed link (and the requested size
+/// variant was ignored). Handing back the id leaves URL construction in the one
+/// place that knows which variant it wants.
+pub fn resolve_cover(variants: &[String]) -> Lookup {
     #[derive(Deserialize)]
     struct Game {
         #[serde(default)]
@@ -110,10 +170,18 @@ pub fn resolve_cover(variants: &[String]) -> Option<String> {
         image_id: String,
     }
 
-    let (client_id, _) = credentials()?;
-    let token = token()?;
+    let Some((client_id, _)) = credentials() else {
+        return Lookup::Unavailable;
+    };
+    let Some(token) = token() else {
+        return Lookup::Unavailable;
+    };
     let agent = agent();
     let bearer = format!("Bearer {token}");
+
+    // Set when a request fails rather than merely coming back empty, so the caller
+    // is told "could not ask" instead of "no cover exists".
+    let mut transport_failed = false;
 
     for variant in variants {
         // Apicalypse query: search by name, only games that have cover art.
@@ -130,6 +198,7 @@ pub fn resolve_cover(variants: &[String]) -> Option<String> {
             .ok()
             .and_then(|r| r.into_json().ok())
         else {
+            transport_failed = true;
             continue;
         };
         if games.is_empty() {
@@ -140,15 +209,18 @@ pub fn resolve_cover(variants: &[String]) -> Option<String> {
         let chosen = games
             .iter()
             .find(|g| g.name.eq_ignore_ascii_case(variant) && g.cover.is_some())
-            .or_else(|| games.iter().find(|g| g.cover.is_some()))?;
-        let image_id = &chosen.cover.as_ref()?.image_id;
-
-        // `t_cover_big_2x` is the high-res portrait box-art (528×748) — twice
-        // `t_cover_big`, so covers stay crisp on HiDPI screens and the detail hero.
-        return Some(format!(
-            "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/{image_id}.jpg"
-        ));
+            .or_else(|| games.iter().find(|g| g.cover.is_some()));
+        let Some(image_id) = chosen.and_then(|g| g.cover.as_ref()).map(|c| &c.image_id) else {
+            continue;
+        };
+        return Lookup::Found(image_id.clone());
     }
 
-    None
+    // Every variant came back empty. Only call that a real miss when no request
+    // failed along the way.
+    if transport_failed {
+        Lookup::Unavailable
+    } else {
+        Lookup::NotFound
+    }
 }

@@ -7,6 +7,14 @@
 //
 // Protocol: one integer (°C) per line on stdout, ~once per second. That's all the
 // Rust controller (cputemp.rs) parses.
+//
+// Shutdown protocol: the parent closes our stdin, we see EOF, call computer.Close()
+// and exit. This matters more than it looks — Open() makes LibreHardwareMonitor
+// install and start a kernel driver via the SCM, and only Close() unloads it. Being
+// TerminateProcess'd (which is what a kill or the parent's kill-on-close Job Object
+// does) skips .NET finalizers, so the driver would stay loaded and registered for
+// the rest of the boot. That residue is what vulnerable-driver blocklists and kernel
+// anti-cheats look for, so it must not depend on the happy path alone.
 
 using System.Globalization;
 using LibreHardwareMonitor.Hardware;
@@ -22,9 +30,40 @@ catch (Exception e)
     return 1;
 }
 
+// Unload the driver exactly once, whichever path we leave by.
+var closed = 0;
+void Shutdown()
+{
+    if (Interlocked.Exchange(ref closed, 1) != 0) return;
+    try { computer.Close(); }
+    catch (Exception e) { Console.Error.WriteLine("cputemp: close failed: " + e.Message); }
+}
+
+// Covers a normal return and an unhandled exception; TerminateProcess still cannot
+// be intercepted, which is why the parent asks over stdin instead of killing.
+AppDomain.CurrentDomain.ProcessExit += (_, _) => Shutdown();
+
+using var stop = new ManualResetEventSlim(false);
+
+Console.CancelKeyPress += (_, e) =>
+{
+    // Handle it ourselves so the sampling loop can unwind through Shutdown().
+    e.Cancel = true;
+    stop.Set();
+};
+
+// EOF on stdin = the parent dropped its write handle and wants us gone.
+new Thread(() =>
+{
+    try { Console.In.ReadToEnd(); }
+    catch { /* closed underneath us; treat as a stop request */ }
+    stop.Set();
+})
+{ IsBackground = true, Name = "stdin-watch" }.Start();
+
 var visitor = new UpdateVisitor();
 
-while (true)
+while (!stop.IsSet)
 {
     computer.Accept(visitor);
 
@@ -55,8 +94,13 @@ while (true)
         Console.Out.Flush();
     }
 
-    Thread.Sleep(1000);
+    // Wait, but wake immediately when the parent asks us to stop, so a shutdown
+    // never has to sit through the rest of a sampling second.
+    if (stop.Wait(1000)) break;
 }
+
+Shutdown();
+return 0;
 
 // Walks the hardware tree and calls Update() so sensor values refresh.
 sealed class UpdateVisitor : IVisitor

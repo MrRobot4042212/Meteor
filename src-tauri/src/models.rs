@@ -94,6 +94,13 @@ pub struct AppSettings {
     /// UI language: "system" (follow the OS, fallback English), "es" or "en".
     #[serde(default = "default_language")]
     pub language: String,
+    /// Whether to publish the game being played to Discord Rich Presence.
+    ///
+    /// Defaults to **off**: this broadcasts what the user is playing to their whole
+    /// friends list, so it is opt-in. `#[serde(default)]` means an existing
+    /// settings file without the field also reads as off.
+    #[serde(default)]
+    pub discord_enabled: bool,
 }
 
 fn default_language() -> String {
@@ -120,14 +127,43 @@ impl Default for ShortcutsSettings {
     }
 }
 
+impl ShortcutsSettings {
+    /// Move anyone still on the original bare-function-key defaults onto the
+    /// modified ones.
+    ///
+    /// `RegisterHotKey` takes a combination away from every application on the
+    /// machine, and the old defaults were `F9`/`F10`/`F11`: quicksave in a large
+    /// slice of PC games, the menu key in every Win32 app, and fullscreen in every
+    /// browser. Nobody chose those, so replacing an exact match is safe; anything
+    /// the user actually customised is left untouched.
+    pub fn migrate_legacy_defaults(&mut self) {
+        for (value, legacy, replacement) in [
+            (&mut self.spotlight, "F9", default_shortcut_spotlight()),
+            (&mut self.overlay_toggle, "F10", default_shortcut_overlay_toggle()),
+            (
+                &mut self.overlay_settings,
+                "F11",
+                default_shortcut_overlay_settings(),
+            ),
+        ] {
+            if value.eq_ignore_ascii_case(legacy) {
+                *value = replacement;
+            }
+        }
+    }
+}
+
+// Modified combinations on purpose: see `migrate_legacy_defaults`. Ctrl+Shift is
+// used rather than Alt+Shift (which Windows itself uses to switch keyboard layout)
+// or Ctrl+Alt (which is AltGr on Spanish and other layouts).
 fn default_shortcut_spotlight() -> String {
-    "F9".to_string()
+    "Ctrl+Shift+F9".to_string()
 }
 fn default_shortcut_overlay_toggle() -> String {
-    "F10".to_string()
+    "Ctrl+Shift+F10".to_string()
 }
 fn default_shortcut_overlay_settings() -> String {
-    "F11".to_string()
+    "Ctrl+Shift+F11".to_string()
 }
 
 fn default_minimize_to_tray() -> bool {
@@ -254,5 +290,57 @@ fn default_font_size_key() -> String {
 
 fn yes() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bare_function_key_defaults_are_migrated_to_modified_ones() {
+        let mut s = ShortcutsSettings {
+            spotlight: "F9".into(),
+            overlay_toggle: "f10".into(),
+            overlay_settings: "F11".into(),
+        };
+        s.migrate_legacy_defaults();
+        assert_eq!(s.spotlight, "Ctrl+Shift+F9");
+        // Case-insensitive: the value is whatever a previous build wrote.
+        assert_eq!(s.overlay_toggle, "Ctrl+Shift+F10");
+        assert_eq!(s.overlay_settings, "Ctrl+Shift+F11");
+    }
+
+    #[test]
+    fn a_shortcut_the_user_chose_is_never_rewritten() {
+        let mut s = ShortcutsSettings {
+            spotlight: "Alt+Space".into(),
+            overlay_toggle: "F12".into(),
+            overlay_settings: String::new(),
+        };
+        s.migrate_legacy_defaults();
+        assert_eq!(s.spotlight, "Alt+Space");
+        assert_eq!(s.overlay_toggle, "F12");
+        assert_eq!(s.overlay_settings, "");
+    }
+
+    #[test]
+    fn no_default_shortcut_is_a_bare_key() {
+        // A bare key is taken from every application on the machine, games included.
+        for combo in [
+            default_shortcut_spotlight(),
+            default_shortcut_overlay_toggle(),
+            default_shortcut_overlay_settings(),
+        ] {
+            assert!(combo.contains('+'), "{combo} has no modifier");
+        }
+    }
+
+    #[test]
+    fn rich_presence_is_off_until_the_user_asks_for_it() {
+        // Deserializing a settings file written before the field existed must not
+        // silently start broadcasting what the user is playing.
+        let s: AppSettings = serde_json::from_str("{}").expect("defaults");
+        assert!(!s.discord_enabled);
+    }
 }
 
