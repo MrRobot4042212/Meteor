@@ -55,7 +55,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre704" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre734" />
   </ItemGroup>
 
 </Project>
